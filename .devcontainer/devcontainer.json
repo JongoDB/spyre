@@ -40,6 +40,7 @@
       }
     }
   },
+  "forwardPorts": [5173],
   "remoteUser": "vscode",
   "mounts": [
     "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",

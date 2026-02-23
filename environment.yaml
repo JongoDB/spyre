@@ -15,7 +15,7 @@ controller:
   ip: "172.17.0.2"
   url: "https://spyre-controller"
   ssh_key_path: "~/.ssh/spyre_ed25519"
-  ssh_public_key: ""
+  ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFRBJ6HJDQc0TAaC+bfJx5FOJaoIqJIYpNN78K93YHC spyre-controller"
   data_dir: "./data"
   config_dir: "./configs"
   db_path: "./data/spyre.db"
