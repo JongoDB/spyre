@@ -95,7 +95,7 @@
 					<div class="info-item">
 						<span class="info-label">Type</span>
 						<span class="type-badge type-badge-{data.script.type}">
-							{data.script.type.toUpperCase()}
+							{data.script.type === 'ct' ? 'LXC' : data.script.type.toUpperCase()}
 						</span>
 					</div>
 				{/if}
@@ -187,10 +187,10 @@
 								{/if}
 							</div>
 							<div class="method-resources">
-								<span class="method-resource">CPU: {method.resources.cpu}</span>
-								<span class="method-resource">RAM: {method.resources.ram} MB</span>
-								<span class="method-resource">Disk: {method.resources.hdd} GB</span>
-								<span class="method-resource">OS: {method.resources.os} {method.resources.version}</span>
+								{#if method.resources.cpu}<span class="method-resource">CPU: {method.resources.cpu}</span>{/if}
+								{#if method.resources.ram}<span class="method-resource">RAM: {method.resources.ram} MB</span>{/if}
+								{#if method.resources.hdd}<span class="method-resource">Disk: {method.resources.hdd} GB</span>{/if}
+								{#if method.resources.os}<span class="method-resource">OS: {method.resources.os} {method.resources.version ?? ''}</span>{/if}
 							</div>
 						</div>
 					{/each}
@@ -225,7 +225,7 @@
 				<h2 class="section-title">Notes</h2>
 				<ul class="notes-list">
 					{#each data.script.notes as note}
-						<li class="note-item">{note}</li>
+						<li class="note-item">{typeof note === 'string' ? note : note.text}</li>
 					{/each}
 				</ul>
 			</section>

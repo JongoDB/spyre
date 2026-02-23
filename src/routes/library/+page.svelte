@@ -95,15 +95,15 @@
 	}
 
 	function setType(type: string) {
-		goto(buildUrl({ type: type || undefined, page: 1 }));
+		goto(buildUrl({ type, page: 1 }));
 	}
 
 	function setCategory(category: string) {
-		goto(buildUrl({ category: category || undefined, page: 1 }));
+		goto(buildUrl({ category, page: 1 }));
 	}
 
 	function setSource(source: string) {
-		goto(buildUrl({ source: source || undefined, page: 1 }));
+		goto(buildUrl({ source, page: 1 }));
 	}
 
 	function goToPage(p: number) {

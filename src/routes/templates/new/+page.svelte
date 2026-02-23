@@ -559,9 +559,9 @@
 							<input id="tpl-root-pw" type="text" class="form-input" placeholder="Leave blank for key-only" autocomplete="new-password" bind:value={rootPassword} />
 						</div>
 						<div class="form-group">
-							<label for="tpl-default-user" class="form-label">Default User (future)</label>
+							<label for="tpl-default-user" class="form-label">Default User</label>
 							<input id="tpl-default-user" type="text" class="form-input" placeholder="e.g. dev" bind:value={defaultUser} />
-							<span class="form-hint">User will be created during provisioning. Currently root is used for access.</span>
+							<span class="form-hint">Creates this user with sudo access during provisioning. Leave blank for root-only access.</span>
 						</div>
 					</div>
 

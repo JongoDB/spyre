@@ -252,6 +252,9 @@
 		<section class="form-section card">
 			<button type="button" class="section-toggle" onclick={() => showOs = !showOs}>
 				<h2 class="section-title">OS</h2>
+				{#if t.community_script_slug}
+					<span class="section-badge">Community Script</span>
+				{/if}
 				<svg
 					width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
 					stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -263,44 +266,70 @@
 
 			{#if showOs}
 				<div class="section-content">
-					<div class="form-group">
-						<label for="tpl-os-template" class="form-label">OS Template</label>
-						{#if (data.osTemplates as Array<{volid: string}>).length > 0}
-							<select id="tpl-os-template" class="form-select" bind:value={osTemplate}>
-								<option value="">-- Select OS template --</option>
-								{#each data.osTemplates as osTpl}
-									<option value={osTpl.volid}>{osTpl.volid}</option>
-								{/each}
-							</select>
-							{#if !osTemplate}
+					{#if t.community_script_slug}
+						<!-- Community scripts handle their own OS provisioning via pveam/direct download -->
+						<div class="community-os-note">
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<circle cx="12" cy="12" r="10" />
+								<path d="M12 16v-4" />
+								<path d="M12 8h.01" />
+							</svg>
+							<div>
+								<p>OS is provisioned automatically by the community script.</p>
+								<p class="form-hint">The script downloads and configures its own OS template. No manual selection needed.</p>
+							</div>
+						</div>
+
+						<div class="form-row">
+							<div class="form-group">
+								<label class="form-label">OS Type</label>
+								<span class="readonly-value">{osType || 'Set by script'}</span>
+							</div>
+							<div class="form-group">
+								<label class="form-label">OS Version</label>
+								<span class="readonly-value">{osVersion || 'Set by script'}</span>
+							</div>
+						</div>
+					{:else}
+						<div class="form-group">
+							<label for="tpl-os-template" class="form-label">OS Template</label>
+							{#if (data.osTemplates as Array<{volid: string}>).length > 0}
+								<select id="tpl-os-template" class="form-select" bind:value={osTemplate}>
+									<option value="">-- Select OS template --</option>
+									{#each data.osTemplates as osTpl}
+										<option value={osTpl.volid}>{osTpl.volid}</option>
+									{/each}
+								</select>
+								{#if !osTemplate}
+									<input
+										type="text"
+										class="form-input"
+										placeholder="Or enter manually..."
+										bind:value={osTemplateManual}
+									/>
+								{/if}
+							{:else}
 								<input
 									type="text"
 									class="form-input"
-									placeholder="Or enter manually..."
-									bind:value={osTemplateManual}
+									placeholder="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+									bind:value={osTemplate}
 								/>
+								<span class="form-hint">Proxmox not connected. Enter template ID manually.</span>
 							{/if}
-						{:else}
-							<input
-								type="text"
-								class="form-input"
-								placeholder="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
-								bind:value={osTemplate}
-							/>
-							<span class="form-hint">Proxmox not connected. Enter template ID manually.</span>
-						{/if}
-					</div>
+						</div>
 
-					<div class="form-row">
-						<div class="form-group">
-							<label for="tpl-os-type" class="form-label">OS Type</label>
-							<input id="tpl-os-type" type="text" class="form-input" placeholder="e.g. ubuntu" bind:value={osType} />
+						<div class="form-row">
+							<div class="form-group">
+								<label for="tpl-os-type" class="form-label">OS Type</label>
+								<input id="tpl-os-type" type="text" class="form-input" placeholder="e.g. ubuntu" bind:value={osType} />
+							</div>
+							<div class="form-group">
+								<label for="tpl-os-version" class="form-label">OS Version</label>
+								<input id="tpl-os-version" type="text" class="form-input" placeholder="e.g. 22.04" bind:value={osVersion} />
+							</div>
 						</div>
-						<div class="form-group">
-							<label for="tpl-os-version" class="form-label">OS Version</label>
-							<input id="tpl-os-version" type="text" class="form-input" placeholder="e.g. 22.04" bind:value={osVersion} />
-						</div>
-					</div>
+					{/if}
 				</div>
 			{/if}
 		</section>
@@ -557,9 +586,9 @@
 							<input id="tpl-root-pw" type="text" class="form-input" placeholder="Leave blank for key-only" autocomplete="new-password" bind:value={rootPassword} />
 						</div>
 						<div class="form-group">
-							<label for="tpl-default-user" class="form-label">Default User (future)</label>
+							<label for="tpl-default-user" class="form-label">Default User</label>
 							<input id="tpl-default-user" type="text" class="form-input" placeholder="e.g. dev" bind:value={defaultUser} />
-							<span class="form-hint">User will be created during provisioning. Currently root is used for access.</span>
+							<span class="form-hint">Creates this user with sudo access during provisioning. Leave blank for root-only access.</span>
 						</div>
 					</div>
 
@@ -772,6 +801,54 @@
 		color: var(--accent);
 		padding: 1px 7px;
 		border-radius: 9999px;
+	}
+
+	.section-badge {
+		font-size: 0.6rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		background-color: rgba(34, 197, 94, 0.12);
+		color: var(--success);
+		padding: 2px 8px;
+		border-radius: 9999px;
+	}
+
+	.community-os-note {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 12px 16px;
+		background-color: rgba(99, 102, 241, 0.06);
+		border: 1px solid rgba(99, 102, 241, 0.15);
+		border-radius: var(--radius-sm);
+		font-size: 0.8125rem;
+		line-height: 1.5;
+	}
+
+	.community-os-note svg {
+		flex-shrink: 0;
+		margin-top: 1px;
+		color: var(--accent);
+	}
+
+	.community-os-note p {
+		margin: 0 0 4px 0;
+	}
+
+	.community-os-note p:last-child {
+		margin-bottom: 0;
+	}
+
+	.readonly-value {
+		display: inline-block;
+		padding: 8px 12px;
+		background-color: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		font-size: 0.8125rem;
+		color: var(--text-primary);
+		font-weight: 500;
 	}
 
 	.chevron {

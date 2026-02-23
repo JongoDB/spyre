@@ -734,6 +734,15 @@ async function createViaCommunityScript(
   // Build the command
   const command = buildCommunityScriptCommand(script, method, req, config, templateStorage, sshPubKey, rootPassword);
 
+  // Snapshot existing containers BEFORE running the script (for CTID detection fallback)
+  let existingVmids: Set<number>;
+  try {
+    const existing = await proxmox.listLxc(node);
+    existingVmids = new Set(existing.map(c => c.vmid));
+  } catch {
+    existingVmids = new Set();
+  }
+
   // Log and execute
   logProvisioningStep(id, 'community_script', 'running', `Running ${script.name} on Proxmox host...`);
   const maskedCommand = command.replace(/var_pw='[^']*'/, "var_pw='***'");
@@ -778,18 +787,41 @@ async function createViaCommunityScript(
 
   // Parse CTID from output
   let vmid = parseCTIDFromOutput(fullOutput);
+  console.log(`[spyre] CTID from output parsing: ${vmid ?? 'not found'}`);
 
-  // Fallback: query Proxmox API for containers matching hostname
+  // Fallback: find new containers that didn't exist before the script ran
   if (!vmid) {
-    console.log('[spyre] CTID not found in output, querying Proxmox API...');
+    console.log('[spyre] CTID not found in output, diffing container list...');
+    const hostname = sanitizeHostname(req.name);
     try {
-      const containers = await proxmox.listLxc(node);
-      const match = containers.find(c =>
-        c.name === req.name || (c.tags && c.tags.includes('spyre'))
-      );
-      if (match) {
-        vmid = match.vmid;
-        console.log(`[spyre] Found matching container via API: VMID ${vmid}`);
+      const currentContainers = await proxmox.listLxc(node);
+      // Find containers that are NEW (not in the pre-run snapshot)
+      const newContainers = currentContainers.filter(c => !existingVmids.has(c.vmid));
+      console.log(`[spyre] Found ${newContainers.length} new container(s) since script started`);
+
+      if (newContainers.length === 1) {
+        // Only one new container — it must be ours
+        vmid = newContainers[0].vmid;
+        console.log(`[spyre] Single new container found: VMID ${vmid} (name: ${newContainers[0].name})`);
+      } else if (newContainers.length > 1) {
+        // Multiple new containers — match by hostname or tags
+        const match = newContainers.find(c =>
+          c.name === hostname ||
+          (c.tags && c.tags.includes('spyre'))
+        );
+        if (match) {
+          vmid = match.vmid;
+          console.log(`[spyre] Matched new container by hostname/tags: VMID ${vmid}`);
+        }
+      }
+
+      // Last resort: search ALL containers for matching hostname
+      if (!vmid) {
+        const match = currentContainers.find(c => c.name === hostname);
+        if (match) {
+          vmid = match.vmid;
+          console.log(`[spyre] Found container by hostname match: VMID ${vmid}`);
+        }
       }
     } catch (err) {
       console.warn('[spyre] Failed to query Proxmox for container:', err);

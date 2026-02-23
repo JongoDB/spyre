@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { authenticate, listTemplates as listOsTemplates, listStorage } from '$lib/server/proxmox';
+import { authenticate, listAllOsTemplates, listStorage } from '$lib/server/proxmox';
 import { getEnvConfig } from '$lib/server/env-config';
 import { listTemplates } from '$lib/server/templates';
 import { listScripts } from '$lib/server/community-scripts';
@@ -14,20 +14,20 @@ export const load: PageServerLoad = async ({ url }) => {
 	try {
 		const config = getEnvConfig();
 		const node = config.proxmox.node_name;
-		const defaultStorage = config.defaults.storage;
 		defaultDns = config.defaults.dns || '8.8.8.8';
 
 		await authenticate();
 		proxmoxConnected = true;
 
 		const [tpls, stores] = await Promise.all([
-			listOsTemplates(node, defaultStorage),
+			listAllOsTemplates(node),
 			listStorage(node)
 		]);
 
 		osTemplates = tpls ?? [];
 		storageList = stores ?? [];
-	} catch {
+	} catch (err) {
+		console.warn('[spyre] Failed to fetch Proxmox data for create page:', err);
 		proxmoxConnected = false;
 	}
 

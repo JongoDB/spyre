@@ -232,6 +232,31 @@ export async function listTemplates(node: string, storage: string): Promise<Prox
   );
 }
 
+/**
+ * Find all OS templates (vztmpl) across all storages on a node.
+ * Queries each storage that supports 'vztmpl' content type.
+ */
+export async function listAllOsTemplates(node: string): Promise<ProxmoxStorageContent[]> {
+  const storages = await listStorage(node);
+  // Filter storages that can hold vztmpl content
+  const templateStorages = storages.filter(s =>
+    s.content?.includes('vztmpl')
+  );
+
+  const results: ProxmoxStorageContent[] = [];
+  for (const s of templateStorages) {
+    try {
+      const contents = await proxmoxFetch<ProxmoxStorageContent[]>(
+        `/nodes/${encodeURIComponent(node)}/storage/${encodeURIComponent(s.storage)}/content?content=vztmpl`
+      );
+      results.push(...contents);
+    } catch {
+      // Storage may be unavailable — skip
+    }
+  }
+  return results;
+}
+
 // --- Network (bridges) ---
 
 export interface ProxmoxBridge {
