@@ -601,8 +601,8 @@
 	}
 
 	.source-community {
-		background-color: rgba(34, 197, 94, 0.12);
-		color: var(--success);
+		background-color: rgba(99, 102, 241, 0.12);
+		color: var(--accent);
 	}
 
 	.card-badges {
