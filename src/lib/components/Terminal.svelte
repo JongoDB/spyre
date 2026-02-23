@@ -5,7 +5,7 @@
 		envId: string;
 		windowIndex?: number;
 		active?: boolean;
-		onconnected?: (windowIndex: number) => void;
+		onconnected?: (windowIndex: number, sessionRestored: boolean) => void;
 		ondisconnected?: (reason: string) => void;
 		onerror?: (message: string) => void;
 	}
@@ -18,6 +18,16 @@
 		ondisconnected,
 		onerror
 	}: Props = $props();
+
+	export function sendKeys(data: string): void {
+		if (ws?.readyState === WebSocket.OPEN) {
+			ws.send(data);
+		}
+	}
+
+	export function focusTerminal(): void {
+		term?.focus();
+	}
 
 	let containerEl: HTMLDivElement;
 	let term: import('@xterm/xterm').Terminal | null = null;
@@ -138,7 +148,7 @@
 						case 'connected':
 							connecting = false;
 							disconnected = false;
-							onconnected?.(msg.windowIndex ?? windowIndex);
+							onconnected?.(msg.windowIndex ?? windowIndex, msg.sessionRestored ?? false);
 							break;
 						case 'disconnected':
 							disconnected = true;

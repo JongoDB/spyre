@@ -56,6 +56,16 @@ export async function ensureSession(
   if (check.code !== 0) {
     await sshExec(client, `tmux new-session -d -s ${sessionName}`);
   }
+
+  // Enable mouse mode so clicking selects panes, resizes panes, and scrolls
+  await sshExec(client, `tmux set-option -t ${sessionName} mouse on 2>/dev/null`);
+
+  // Use vi copy-mode keys for manual Ctrl+B [ usage
+  await sshExec(client, `tmux set-window-option -t ${sessionName} mode-keys vi 2>/dev/null`);
+
+  // Make search highlights clearly visible (yellow for all matches, bright magenta for current)
+  await sshExec(client, `tmux set-option -t ${sessionName} copy-mode-match-style 'bg=yellow,fg=black' 2>/dev/null`);
+  await sshExec(client, `tmux set-option -t ${sessionName} copy-mode-current-match-style 'bg=magenta,fg=white,bold' 2>/dev/null`);
 }
 
 export async function listWindows(
@@ -146,3 +156,50 @@ export async function killWindow(
 ): Promise<void> {
   await sshExec(client, `tmux kill-window -t ${sessionName}:${windowIndex}`);
 }
+
+export async function sessionExists(
+  client: SshClient,
+  sessionName = 'spyre'
+): Promise<boolean> {
+  const result = await sshExec(client, `tmux has-session -t ${sessionName} 2>/dev/null`);
+  return result.code === 0;
+}
+
+export async function swapWindow(
+  client: SshClient,
+  sessionName: string,
+  sourceIndex: number,
+  targetIndex: number
+): Promise<void> {
+  await sshExec(
+    client,
+    `tmux swap-window -s ${sessionName}:${sourceIndex} -t ${sessionName}:${targetIndex}`
+  );
+}
+
+export async function setBroadcast(
+  client: SshClient,
+  sessionName: string,
+  windowIndex: number,
+  enabled: boolean
+): Promise<void> {
+  const value = enabled ? 'on' : 'off';
+  await sshExec(
+    client,
+    `tmux set-window-option -t ${sessionName}:${windowIndex} synchronize-panes ${value}`
+  );
+}
+
+export async function capturePane(
+  client: SshClient,
+  sessionName: string,
+  windowIndex: number
+): Promise<string> {
+  const result = await sshExec(
+    client,
+    `tmux capture-pane -t ${sessionName}:${windowIndex} -p -S -10000`,
+    15_000
+  );
+  return result.stdout;
+}
+

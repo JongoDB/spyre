@@ -129,6 +129,13 @@ async function ensureSession(client, sessionName = 'spyre') {
   if (check.code !== 0) {
     await sshExec(client, `tmux new-session -d -s ${sessionName}`);
   }
+  // Enable mouse mode so clicking selects panes, resizes panes, and scrolls
+  await sshExec(client, `tmux set-option -t ${sessionName} mouse on 2>/dev/null`);
+  // Use vi copy-mode keys for manual Ctrl+B [ usage
+  await sshExec(client, `tmux set-window-option -t ${sessionName} mode-keys vi 2>/dev/null`);
+  // Make search highlights clearly visible
+  await sshExec(client, `tmux set-option -t ${sessionName} copy-mode-match-style 'bg=yellow,fg=black' 2>/dev/null`);
+  await sshExec(client, `tmux set-option -t ${sessionName} copy-mode-current-match-style 'bg=magenta,fg=white,bold' 2>/dev/null`);
 }
 
 function attachToWindow(client, sessionName = 'spyre', windowIndex) {
@@ -163,13 +170,16 @@ async function attachTerminal(ws, options) {
   catch (err) { sendJson(ws, { type: 'error', message: `SSH failed: ${err.message}` }); ws.close(); return; }
 
   let channel;
+  let sessionRestored = false;
   try {
+    const hasCheck = await sshExec(client, 'tmux has-session -t spyre 2>/dev/null');
+    sessionRestored = hasCheck.code === 0;
     await ensureSession(client);
     channel = await attachToWindow(client, 'spyre', windowIndex);
   } catch (err) { sendJson(ws, { type: 'error', message: `tmux failed: ${err.message}` }); ws.close(); return; }
 
   if (cols && rows) channel.setWindow(rows, cols, 0, 0);
-  sendJson(ws, { type: 'connected', windowIndex: windowIndex ?? 0 });
+  sendJson(ws, { type: 'connected', windowIndex: windowIndex ?? 0, sessionRestored });
 
   channel.on('data', (data) => { if (ws.readyState === 1) ws.send(data); });
 

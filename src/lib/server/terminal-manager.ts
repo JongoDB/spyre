@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { ClientChannel } from 'ssh2';
 import { getConnection, closeConnection } from './ssh-pool';
-import { ensureSession, attachToWindow } from './tmux-controller';
+import { ensureSession, attachToWindow, sessionExists } from './tmux-controller';
 import { getEnvironment } from './environments';
 import { getDb } from './db';
 
@@ -55,7 +55,9 @@ export async function attachTerminal(
   }
 
   let channel: ClientChannel;
+  let sessionRestored = false;
   try {
+    sessionRestored = await sessionExists(client);
     await ensureSession(client);
     channel = await attachToWindow(client, 'spyre', windowIndex);
   } catch (err) {
@@ -71,7 +73,7 @@ export async function attachTerminal(
   }
 
   // Notify client of connection
-  sendJson(ws, { type: 'connected', windowIndex: windowIndex ?? 0 });
+  sendJson(ws, { type: 'connected', windowIndex: windowIndex ?? 0, sessionRestored });
 
   // Pipe: SSH channel → WebSocket
   channel.on('data', (data: Buffer) => {
