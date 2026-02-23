@@ -555,6 +555,7 @@ function buildCommunityScriptCommand(
     .join('; ');
 
   return [
+    "export TERM=xterm",
     "mkdir -p /usr/local/community-scripts",
     "echo 'DIAGNOSTICS=no' > /usr/local/community-scripts/diagnostics",
     "export mode=default",

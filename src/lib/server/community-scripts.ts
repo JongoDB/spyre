@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto';
 import { getDb } from './db';
-import { getEnvConfig } from './env-config';
-import { authenticate, listAllOsTemplates } from './proxmox';
 import type { CommunityScript, CommunityScriptSearchParams, CommunityScriptListResult } from '$lib/types/community-script';
 import type { Template } from '$lib/types/template';
 import { createTemplate } from './templates';
@@ -288,48 +286,6 @@ function inferOsFromName(name: string, slug: string): { os: string | null; versi
   return { os: null, version: null };
 }
 
-/**
- * Try to find a matching OS template on Proxmox based on os name and version.
- * E.g. default_os="ubuntu", default_os_version="24.04" → "local:vztmpl/ubuntu-24.04-..."
- */
-async function resolveOsTemplate(defaultOs: string | null, defaultVersion: string | null): Promise<string | undefined> {
-  if (!defaultOs) return undefined;
-
-  try {
-    const config = getEnvConfig();
-    await authenticate();
-    const templates = await listAllOsTemplates(config.proxmox.node_name);
-
-    const osLower = defaultOs.toLowerCase();
-    const ver = defaultVersion ?? '';
-
-    console.log(`[spyre] resolveOsTemplate: looking for os=${osLower} version=${ver} among ${templates.length} templates`);
-
-    // Try exact match first: os name + version in the volid
-    for (const tpl of templates) {
-      const volLower = tpl.volid.toLowerCase();
-      if (volLower.includes(osLower) && ver && volLower.includes(ver)) {
-        console.log(`[spyre] resolveOsTemplate: exact match → ${tpl.volid}`);
-        return tpl.volid;
-      }
-    }
-
-    // Try just OS name match
-    for (const tpl of templates) {
-      if (tpl.volid.toLowerCase().includes(osLower)) {
-        console.log(`[spyre] resolveOsTemplate: name match → ${tpl.volid}`);
-        return tpl.volid;
-      }
-    }
-
-    console.log(`[spyre] resolveOsTemplate: no matching template found`);
-  } catch (err) {
-    console.warn(`[spyre] resolveOsTemplate: failed to query Proxmox:`, err instanceof Error ? err.message : err);
-  }
-
-  return undefined;
-}
-
 export async function importAsTemplate(slug: string, templateName?: string): Promise<Template> {
   const script = getScript(slug);
   if (!script) {
@@ -338,36 +294,27 @@ export async function importAsTemplate(slug: string, templateName?: string): Pro
 
   const name = templateName ?? `${script.name} (Community)`;
 
-  // Use script metadata, falling back to name-based inference
-  let osType = script.default_os;
-  let osVersion = script.default_os_version;
-  if (!osType) {
-    const inferred = inferOsFromName(script.name, slug);
-    osType = inferred.os;
-    osVersion = inferred.version ?? osVersion;
-    if (inferred.os) {
-      console.log(`[spyre] importAsTemplate: inferred OS from name — ${inferred.os} ${inferred.version ?? '(no version)'}`);
-    }
-  }
-
-  // Try to resolve the OS template from Proxmox
-  const osTemplate = await resolveOsTemplate(osType, osVersion);
-
-  // Find the default install method
+  // Find the default install method — this is the source of truth for OS info.
+  // Community scripts handle their own template download via pveam on the host,
+  // so we don't need a Proxmox OS template volid.
   const defaultMethod = script.install_methods.length > 0
     ? script.install_methods[0]
     : undefined;
+
+  // OS info comes from the install method resources, not from Proxmox template matching
+  const osType = defaultMethod?.resources?.os ?? script.default_os ?? null;
+  const osVersion = defaultMethod?.resources?.version ?? script.default_os_version ?? null;
 
   return createTemplate({
     name,
     description: script.description ?? `Imported from community script: ${script.name}`,
     type: script.type === 'vm' ? 'vm' : 'lxc',
-    os_template: osTemplate,
+    // No os_template — community scripts download their own via pveam
     os_type: osType ?? undefined,
     os_version: osVersion ?? undefined,
-    cores: script.default_cpu ?? undefined,
-    memory: script.default_ram ?? undefined,
-    disk: script.default_disk ?? undefined,
+    cores: defaultMethod?.resources?.cpu ?? script.default_cpu ?? undefined,
+    memory: defaultMethod?.resources?.ram ?? script.default_ram ?? undefined,
+    disk: defaultMethod?.resources?.hdd ?? script.default_disk ?? undefined,
     community_script_slug: slug,
     install_method_type: defaultMethod?.type ?? 'default',
     interface_port: script.interface_port ?? undefined,
