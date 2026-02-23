@@ -3,6 +3,7 @@ import { getTemplateWithRelations } from '$lib/server/templates';
 import { listPresets } from '$lib/server/resource-presets';
 import { listProfiles } from '$lib/server/network-profiles';
 import { listPools } from '$lib/server/software-pools';
+import { listCategories } from '$lib/server/categories';
 import { authenticate, listAllOsTemplates, listNetworkBridges } from '$lib/server/proxmox';
 import { getEnvConfig } from '$lib/server/env-config';
 import { error } from '@sveltejs/kit';
@@ -14,6 +15,7 @@ export const load: PageServerLoad = async ({ params }) => {
 	const presets = listPresets();
 	const profiles = listProfiles();
 	const pools = listPools();
+	const categories = listCategories();
 
 	let osTemplates: Array<{ volid: string }> = [];
 	let bridges: Array<{ iface: string; type: string }> = [];
@@ -34,5 +36,5 @@ export const load: PageServerLoad = async ({ params }) => {
 		proxmoxConnected = false;
 	}
 
-	return { template, presets, profiles, pools, osTemplates, bridges, proxmoxConnected };
+	return { template, presets, profiles, pools, categories, osTemplates, bridges, proxmoxConnected };
 };

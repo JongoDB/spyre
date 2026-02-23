@@ -105,7 +105,7 @@
 						<span class="info-label">Categories</span>
 						<div class="category-badges">
 							{#each data.script.categories as cat}
-								<span class="category-badge">{cat}</span>
+								<span class="category-badge">{data.categoryMap[String(cat)] ?? cat}</span>
 							{/each}
 						</div>
 					</div>

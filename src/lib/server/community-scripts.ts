@@ -56,8 +56,11 @@ export function listScripts(params: CommunityScriptSearchParams = {}): Community
   }
 
   if (params.category) {
-    where += ' AND categories LIKE ?';
-    binds.push(`%"${params.category}"%`);
+    // Categories are stored as JSON integer arrays like [6] or [3,8].
+    // Match the integer value in any position within the JSON array.
+    where += ' AND (categories LIKE ? OR categories LIKE ? OR categories LIKE ? OR categories LIKE ?)';
+    const c = params.category;
+    binds.push(`[${c}]`, `[${c},%`, `%,${c}]`, `%,${c},%`);
   }
 
   const total = (db.prepare(`SELECT COUNT(*) as count FROM community_scripts_cache ${where}`).get(...binds) as { count: number }).count;
@@ -305,6 +308,19 @@ export async function importAsTemplate(slug: string, templateName?: string): Pro
   const osType = defaultMethod?.resources?.os ?? script.default_os ?? null;
   const osVersion = defaultMethod?.resources?.version ?? script.default_os_version ?? null;
 
+  // Auto-assign category from the script's first category integer
+  let categoryId: string | undefined;
+  if (Array.isArray(script.categories) && script.categories.length > 0) {
+    const firstCatInt = String(script.categories[0]);
+    const candidateId = `cat-${firstCatInt}`;
+    // Verify the category exists in the database
+    const db = getDb();
+    const exists = db.prepare('SELECT id FROM categories WHERE id = ?').get(candidateId);
+    if (exists) {
+      categoryId = candidateId;
+    }
+  }
+
   return createTemplate({
     name,
     description: script.description ?? `Imported from community script: ${script.name}`,
@@ -328,23 +344,48 @@ export async function importAsTemplate(slug: string, templateName?: string): Pro
     nesting: true,
     ssh_enabled: true,
     installed_software: [script.name],
-    tags: Array.isArray(script.categories) ? script.categories.map(String).join(', ') : undefined
+    tags: Array.isArray(script.categories) ? script.categories.map(String).join(', ') : undefined,
+    category_id: categoryId
   });
 }
 
-export function getAllCategories(): string[] {
+/**
+ * Returns all distinct category IDs used by community scripts, resolved to { id, name } objects.
+ * Falls back to the raw integer ID as the name if no matching category row exists.
+ */
+export function getAllCategories(): Array<{ id: string; name: string }> {
   const db = getDb();
   const rows = db.prepare('SELECT DISTINCT categories FROM community_scripts_cache WHERE categories IS NOT NULL').all() as Array<{ categories: string }>;
 
-  const categorySet = new Set<string>();
+  const categoryIds = new Set<string>();
   for (const row of rows) {
     const cats = JSON.parse(row.categories);
     if (Array.isArray(cats)) {
       for (const cat of cats) {
-        categorySet.add(String(cat));
+        categoryIds.add(String(cat));
       }
     }
   }
 
-  return Array.from(categorySet).sort();
+  // Resolve IDs to names from the categories table
+  const catMap = getCategoryMap();
+  return Array.from(categoryIds)
+    .sort((a, b) => Number(a) - Number(b))
+    .map(id => ({ id, name: catMap[id] ?? id }));
+}
+
+/**
+ * Returns a map from community-script integer category IDs to category names.
+ */
+export function getCategoryMap(): Record<string, string> {
+  const db = getDb();
+  const cats = db.prepare('SELECT id, name FROM categories').all() as Array<{ id: string; name: string }>;
+  const map: Record<string, string> = {};
+  for (const cat of cats) {
+    const match = cat.id.match(/^cat-(\d+)$/);
+    if (match) {
+      map[match[1]] = cat.name;
+    }
+  }
+  return map;
 }

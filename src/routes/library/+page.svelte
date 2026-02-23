@@ -245,7 +245,7 @@
 				>
 					<option value="">All Categories</option>
 					{#each data.categories as cat}
-						<option value={cat}>{cat}</option>
+						<option value={cat.id}>{cat.name}</option>
 					{/each}
 				</select>
 			{/if}

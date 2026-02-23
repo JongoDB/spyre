@@ -1,4 +1,25 @@
 // =============================================================================
+// Categories
+// =============================================================================
+
+export interface Category {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CategoryInput {
+  name: string;
+  description?: string;
+  icon?: string;
+  sort_order?: number;
+}
+
+// =============================================================================
 // Resource Presets
 // =============================================================================
 
@@ -122,6 +143,7 @@ export interface Template {
   // References
   resource_preset_id: string | null;
   network_profile_id: string | null;
+  category_id: string | null;
 
   // OS
   os_template: string | null;
@@ -177,6 +199,7 @@ export interface Template {
 export interface TemplateWithRelations extends Template {
   resource_preset: ResourcePreset | null;
   network_profile: NetworkProfile | null;
+  category: Category | null;
   software_pools: SoftwarePoolWithItems[];
 }
 
@@ -187,6 +210,7 @@ export interface TemplateInput {
 
   resource_preset_id?: string;
   network_profile_id?: string;
+  category_id?: string;
 
   os_template?: string;
   os_type?: string;

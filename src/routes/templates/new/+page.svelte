@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import type { PageData } from './$types';
-	import type { ResourcePreset, NetworkProfile, SoftwarePool } from '$lib/types/template';
+	import type { ResourcePreset, NetworkProfile, SoftwarePool, Category } from '$lib/types/template';
 
 	let { data }: { data: PageData } = $props();
 
@@ -18,6 +18,7 @@
 	let name = $state('');
 	let description = $state('');
 	let type = $state<'lxc' | 'vm'>('lxc');
+	let categoryId = $state('');
 
 	// OS
 	let osTemplate = $state('');
@@ -105,6 +106,8 @@
 			description: description || undefined,
 			type
 		};
+
+		if (categoryId) body.category_id = categoryId;
 
 		// OS
 		if (effectiveOsTemplate) body.os_template = effectiveOsTemplate;
@@ -241,12 +244,24 @@
 				></textarea>
 			</div>
 
-			<div class="form-group">
-				<label for="tpl-type" class="form-label">Type</label>
-				<select id="tpl-type" class="form-select" bind:value={type}>
-					<option value="lxc">LXC Container</option>
-					<option value="vm">Virtual Machine</option>
-				</select>
+			<div class="form-row">
+				<div class="form-group">
+					<label for="tpl-type" class="form-label">Type</label>
+					<select id="tpl-type" class="form-select" bind:value={type}>
+						<option value="lxc">LXC Container</option>
+						<option value="vm">Virtual Machine</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="tpl-category" class="form-label">Category</label>
+					<select id="tpl-category" class="form-select" bind:value={categoryId}>
+						<option value="">None</option>
+						{#each data.categories as cat}
+							<option value={cat.id}>{cat.name}</option>
+						{/each}
+					</select>
+				</div>
 			</div>
 		</section>
 

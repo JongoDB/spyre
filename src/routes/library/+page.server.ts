@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { listScripts, getLastSyncTime, getAllCategories } from '$lib/server/community-scripts';
+import { listScripts, getLastSyncTime, getAllCategories, getCategoryMap } from '$lib/server/community-scripts';
 import { authenticate, listAllOsTemplates } from '$lib/server/proxmox';
 import { getEnvConfig } from '$lib/server/env-config';
 import type { ProxmoxStorageContent } from '$lib/types/proxmox';
@@ -28,10 +28,13 @@ export const load: PageServerLoad = async ({ url }) => {
 		proxmoxConnected = false;
 	}
 
+	const categoryMap = getCategoryMap();
+
 	return {
 		...result,
 		lastSync,
 		categories,
+		categoryMap,
 		osTemplates,
 		proxmoxConnected,
 		query: query ?? '',

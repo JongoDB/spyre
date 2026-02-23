@@ -16,6 +16,10 @@
       <h3>Network Profiles</h3>
       <p>Named network configurations with bridge, IP mode, DNS, and VLAN settings.</p>
     </a>
+    <a href="/settings/categories" class="settings-card card">
+      <h3>Categories</h3>
+      <p>Organize templates and community scripts into named categories.</p>
+    </a>
   </div>
 </div>
 

@@ -210,6 +210,19 @@ CREATE TABLE IF NOT EXISTS network_profiles (
 );
 
 -- =============================================================================
+-- Categories — Organized groupings for templates and community scripts
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS categories (
+    id          TEXT PRIMARY KEY,
+    name        TEXT UNIQUE NOT NULL,
+    description TEXT,
+    icon        TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
 -- Software Pools — Reusable named software collections
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS software_pools (
@@ -250,6 +263,7 @@ CREATE TABLE IF NOT EXISTS templates (
     -- References to building blocks (nullable)
     resource_preset_id      TEXT REFERENCES resource_presets(id) ON DELETE SET NULL,
     network_profile_id      TEXT REFERENCES network_profiles(id) ON DELETE SET NULL,
+    category_id             TEXT REFERENCES categories(id) ON DELETE SET NULL,
 
     -- OS fields
     os_template             TEXT,                            -- Proxmox template volid
@@ -365,3 +379,32 @@ INSERT OR IGNORE INTO resource_presets (id, name, description, cores, memory, sw
 
 INSERT OR IGNORE INTO network_profiles (id, name, description, bridge, ip_mode, dns) VALUES
     ('profile-dhcp', 'DHCP on vmbr0', 'Automatic IP via DHCP on the default bridge', 'vmbr0', 'dhcp', '8.8.8.8');
+
+-- Seed Data — Community-scripts categories (from metadata.json)
+INSERT OR IGNORE INTO categories (id, name, description, icon, sort_order) VALUES
+    ('cat-0',  'Miscellaneous',              'General scripts and tools',                              'more-horizontal', 99),
+    ('cat-1',  'Proxmox & Virtualization',   'Manage Proxmox VE and virtualization platforms',         'server',           1),
+    ('cat-2',  'Operating Systems',          'Deploy and manage various operating systems',            'monitor',          2),
+    ('cat-3',  'Containers & Docker',        'Container runtimes and orchestration tools',             'box',              3),
+    ('cat-4',  'Network & Firewall',         'Networking, VPN, and firewall solutions',                'shield',           4),
+    ('cat-5',  'Adblock & DNS',              'DNS servers and ad-blocking solutions',                  'filter',           5),
+    ('cat-6',  'Authentication & Security',  'Identity management and security tools',                 'lock',             6),
+    ('cat-7',  'Backup & Recovery',          'Backup solutions and disaster recovery',                 'save',             7),
+    ('cat-8',  'Databases',                  'Database engines and management tools',                  'database',         8),
+    ('cat-9',  'Monitoring & Analytics',     'System monitoring and analytics platforms',              'activity',         9),
+    ('cat-10', 'Dashboards & Frontends',     'Web dashboards and frontend applications',              'layout',          10),
+    ('cat-11', 'Files & Downloads',          'File sharing and download management',                  'folder',          11),
+    ('cat-12', 'Documents & Notes',          'Document management and note-taking',                   'file-text',       12),
+    ('cat-13', 'Media & Streaming',          'Media servers and streaming platforms',                  'film',            13),
+    ('cat-14', '*Arr Suite',                 'Radarr, Sonarr, and related media automation',          'star',            14),
+    ('cat-15', 'NVR & Cameras',              'Network video recorders and camera systems',            'camera',          15),
+    ('cat-16', 'IoT & Smart Home',           'Internet of Things and home automation',                'home',            16),
+    ('cat-17', 'ZigBee, Z-Wave & Matter',    'Smart home wireless protocols and bridges',             'radio',           17),
+    ('cat-18', 'MQTT & Messaging',           'Message brokers and messaging protocols',               'message-square',  18),
+    ('cat-19', 'Automation & Scheduling',    'Task automation and job scheduling',                    'clock',           19),
+    ('cat-20', 'AI / Coding & Dev-Tools',    'AI tools, coding environments, and developer utilities','code',            20),
+    ('cat-21', 'Webservers & Proxies',       'Web servers and reverse proxy solutions',               'globe',           21),
+    ('cat-22', 'Bots & ChatOps',             'Chat bots and ChatOps automation',                      'message-circle',  22),
+    ('cat-23', 'Finance & Budgeting',        'Financial management and budgeting tools',              'dollar-sign',     23),
+    ('cat-24', 'Gaming & Leisure',           'Game servers and entertainment platforms',              'gamepad-2',       24),
+    ('cat-25', 'Business & ERP',             'Business operations and management tools',              'building',        25);

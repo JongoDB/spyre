@@ -3,6 +3,7 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import { getPreset } from './resource-presets';
 import { getProfile } from './network-profiles';
+import { getCategory } from './categories';
 import type {
   Template,
   TemplateWithRelations,
@@ -35,6 +36,10 @@ export function getTemplateWithRelations(id: string): TemplateWithRelations | un
     ? getProfile(template.network_profile_id) ?? null
     : null;
 
+  const category = template.category_id
+    ? getCategory(template.category_id) ?? null
+    : null;
+
   // Get attached software pools with items
   const poolJoins = db.prepare(`
     SELECT sp.*, tsp.sort_order as join_sort_order
@@ -63,6 +68,7 @@ export function getTemplateWithRelations(id: string): TemplateWithRelations | un
     ...template,
     resource_preset: resourcePreset,
     network_profile: networkProfile,
+    category,
     software_pools: softwarePools
   };
 }
@@ -153,7 +159,7 @@ export function createTemplate(input: TemplateInput): Template {
   const insertTemplate = db.prepare(`
     INSERT INTO templates (
       id, name, description, type,
-      resource_preset_id, network_profile_id,
+      resource_preset_id, network_profile_id, category_id,
       os_template, os_type, os_version,
       cores, memory, swap, disk, storage,
       bridge, ip_mode, ip_address, gateway, dns, vlan,
@@ -164,7 +170,7 @@ export function createTemplate(input: TemplateInput): Template {
       installed_software, custom_script, tags
     ) VALUES (
       ?, ?, ?, ?,
-      ?, ?,
+      ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?, ?,
@@ -184,7 +190,7 @@ export function createTemplate(input: TemplateInput): Template {
   db.transaction(() => {
     insertTemplate.run(
       id, input.name, input.description ?? null, input.type ?? 'lxc',
-      input.resource_preset_id ?? null, input.network_profile_id ?? null,
+      input.resource_preset_id ?? null, input.network_profile_id ?? null, input.category_id ?? null,
       input.os_template ?? null, input.os_type ?? null, input.os_version ?? null,
       input.cores ?? null, input.memory ?? null, input.swap ?? null, input.disk ?? null, input.storage ?? null,
       input.bridge ?? null, input.ip_mode ?? null, input.ip_address ?? null, input.gateway ?? null, input.dns ?? null, input.vlan ?? null,
@@ -230,7 +236,7 @@ export function updateTemplate(id: string, input: Partial<TemplateInput>): Templ
   db.prepare(`
     UPDATE templates SET
       name = ?, description = ?, type = ?,
-      resource_preset_id = ?, network_profile_id = ?,
+      resource_preset_id = ?, network_profile_id = ?, category_id = ?,
       os_template = ?, os_type = ?, os_version = ?,
       cores = ?, memory = ?, swap = ?, disk = ?, storage = ?,
       bridge = ?, ip_mode = ?, ip_address = ?, gateway = ?, dns = ?, vlan = ?,
@@ -247,6 +253,7 @@ export function updateTemplate(id: string, input: Partial<TemplateInput>): Templ
     input.type ?? existing.type,
     input.resource_preset_id !== undefined ? input.resource_preset_id ?? null : existing.resource_preset_id,
     input.network_profile_id !== undefined ? input.network_profile_id ?? null : existing.network_profile_id,
+    input.category_id !== undefined ? input.category_id ?? null : existing.category_id,
     input.os_template !== undefined ? input.os_template ?? null : existing.os_template,
     input.os_type !== undefined ? input.os_type ?? null : existing.os_type,
     input.os_version !== undefined ? input.os_version ?? null : existing.os_version,
@@ -343,6 +350,7 @@ export function duplicateTemplate(id: string, newName?: string): Template {
     type: existing.type,
     resource_preset_id: existing.resource_preset_id ?? undefined,
     network_profile_id: existing.network_profile_id ?? undefined,
+    category_id: existing.category_id ?? undefined,
     os_template: existing.os_template ?? undefined,
     os_type: existing.os_type ?? undefined,
     os_version: existing.os_version ?? undefined,
