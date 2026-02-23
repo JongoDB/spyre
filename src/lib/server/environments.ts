@@ -30,7 +30,11 @@ function generatePassword(length = 16): string {
  * SSH into the Proxmox host and run a command.
  * Uses the SSH key configured in environment.yaml.
  */
-function sshToProxmox(command: string, timeoutMs = 30000): Promise<{ code: number; stdout: string; stderr: string }> {
+function sshToProxmox(
+  command: string,
+  timeoutMs = 30000,
+  options?: { pty?: boolean }
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const config = getEnvConfig();
   const keyPath = config.controller.ssh_key_path.replace('~', process.env.HOME ?? '');
 
@@ -49,7 +53,7 @@ function sshToProxmox(command: string, timeoutMs = 30000): Promise<{ code: numbe
     }, timeoutMs);
 
     conn.on('ready', () => {
-      conn.exec(command, (err, stream) => {
+      const execCallback = (err: Error | undefined, stream: import('ssh2').ClientChannel) => {
         if (err) {
           clearTimeout(timer);
           conn.end();
@@ -65,7 +69,13 @@ function sshToProxmox(command: string, timeoutMs = 30000): Promise<{ code: numbe
           conn.end();
           resolve({ code, stdout, stderr });
         });
-      });
+      };
+
+      if (options?.pty) {
+        conn.exec(command, { pty: { rows: 50, cols: 200, term: 'xterm' } }, execCallback);
+      } else {
+        conn.exec(command, execCallback);
+      }
     });
 
     conn.on('error', (err) => {
@@ -496,8 +506,27 @@ async function discoverTemplateStorage(): Promise<string> {
 }
 
 /**
+ * Sanitize a name into a valid DNS hostname.
+ * Lowercase, strip invalid chars, truncate to 63 chars.
+ */
+function sanitizeHostname(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')   // Replace invalid chars with hyphens
+    .replace(/^-+|-+$/g, '')        // Trim leading/trailing hyphens
+    .replace(/-{2,}/g, '-')         // Collapse multiple hyphens
+    .slice(0, 63) || 'spyre-env';   // Truncate and provide fallback
+}
+
+/**
  * Build the full bash command to run a community script on the Proxmox host.
  * Sets mode=default + all var_* env vars to bypass the interactive TUI.
+ *
+ * The command includes:
+ * - A whiptail wrapper to auto-respond to any interactive dialogs
+ * - TERM/DEBIAN_FRONTEND for non-interactive operation
+ * - All var_* exports for build.func's base_settings()
+ * - DIAGNOSTICS=no to skip telemetry prompts
  */
 function buildCommunityScriptCommand(
   script: CommunityScript,
@@ -513,8 +542,9 @@ function buildCommunityScriptCommand(
   const dns = req.nameserver ?? config.defaults.dns ?? '8.8.8.8';
   const gateway = config.defaults.gateway ?? '';
   const password = rootPassword;
+  const hostname = sanitizeHostname(req.name);
 
-  // Build var_* exports
+  // Build var_* exports — these map to internal variables in build.func's base_settings()
   const vars: Record<string, string> = {
     var_cpu: String(req.cores),
     var_ram: String(req.memory),
@@ -530,8 +560,8 @@ function buildCommunityScriptCommand(
     var_ssh: req.ssh_enabled !== false ? 'yes' : 'no',
     var_container_storage: containerStorage,
     var_template_storage: templateStorage,
-    var_hostname: req.name,
-    var_verbose: 'no',
+    var_hostname: hostname,
+    var_verbose: 'yes',
     var_tags: 'spyre',
     var_timezone: 'host',
   };
@@ -549,17 +579,55 @@ function buildCommunityScriptCommand(
   const scriptPath = method.script;
   const scriptUrl = `https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/${scriptPath}`;
 
-  // Assemble command
+  // Assemble var_* exports
   const exportLines = Object.entries(vars)
     .map(([k, v]) => `export ${k}='${v.replace(/'/g, "'\\''")}'`)
     .join('; ');
 
+  // Whiptail wrapper: intercepts all whiptail/dialog calls to auto-respond.
+  // whiptail outputs selections to STDERR (that's the standard behavior).
+  // --yesno returns 1 (No) to skip debug prompts on failure.
+  // --msgbox/--infobox returns 0.
+  // --menu/--radiolist/--inputbox: output the first option or empty to stderr, return 0.
+  // This prevents segfaults when no TTY is available.
+  const whiptailWrapper = [
+    'mkdir -p /tmp/spyre-bin',
+    `cat > /tmp/spyre-bin/whiptail << 'SPYRE_WHIPTAIL_EOF'
+#!/bin/bash
+# Auto-responder for non-interactive community script execution
+MODE=""
+for arg in "$@"; do
+  case "$arg" in
+    --yesno) MODE=yesno ;;
+    --msgbox|--infobox|--gauge) MODE=msg ;;
+    --menu|--radiolist|--checklist) MODE=menu ;;
+    --inputbox|--passwordbox) MODE=input ;;
+  esac
+done
+case "$MODE" in
+  yesno) exit 1 ;;
+  msg) exit 0 ;;
+  menu|input) echo "" >&2; exit 0 ;;
+  *) exit 0 ;;
+esac
+SPYRE_WHIPTAIL_EOF`,
+    'chmod +x /tmp/spyre-bin/whiptail',
+    'export PATH="/tmp/spyre-bin:$PATH"',
+  ].join('; ');
+
   return [
-    "export TERM=xterm",
-    "mkdir -p /usr/local/community-scripts",
+    // Terminal and non-interactive settings
+    'export TERM=xterm',
+    'export DEBIAN_FRONTEND=noninteractive',
+    // Whiptail auto-responder wrapper
+    whiptailWrapper,
+    // Diagnostics opt-out
+    'mkdir -p /usr/local/community-scripts',
     "echo 'DIAGNOSTICS=no' > /usr/local/community-scripts/diagnostics",
-    "export mode=default",
+    // Mode and variable exports
+    'export mode=default',
     exportLines,
+    // Execute the community script — yes '' handles any stray read prompts
     `yes '' | bash -c "$(curl -fsSL '${scriptUrl}')" 2>&1`
   ].join('; ');
 }
@@ -567,21 +635,28 @@ function buildCommunityScriptCommand(
 /**
  * Parse the CTID from community script output.
  * The scripts log recognizable patterns when creating containers.
+ * build.func outputs "pct create <ID> ..." during container creation.
  */
 function parseCTIDFromOutput(output: string): number | null {
+  // Strip ANSI escape codes for clean matching
+  const clean = output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+
   // Try various patterns that build.func outputs
   const patterns = [
-    /pct create (\d+)/,
+    /pct create (\d+)/,           // The actual pct create command
+    /CTID[=:\s]+(\d+)/i,         // build.func exports CTID
     /Container ID[:\s]+(\d+)/i,
     /Using ID[:\s]+(\d+)/i,
     /LXC_ID[=:\s]+(\d+)/i,
-    /CTID[=:\s]+(\d+)/i,
+    /Successfully created Container (\d+)/i,
+    /PCT_DISK_SIZE.*pct create (\d+)/i,
   ];
 
   for (const pattern of patterns) {
-    const match = output.match(pattern);
+    const match = clean.match(pattern);
     if (match) {
-      return parseInt(match[1], 10);
+      const id = parseInt(match[1], 10);
+      if (id > 0 && id < 999999) return id;
     }
   }
 
@@ -590,12 +665,13 @@ function parseCTIDFromOutput(output: string): number | null {
 
 /**
  * Run a community script on the Proxmox host via SSH.
+ * Uses a PTY for proper terminal handling (tput, clear, etc. work correctly).
  */
 async function runCommunityScriptOnHost(
   command: string,
   timeoutMs = 900000
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  return sshToProxmox(command, timeoutMs);
+  return sshToProxmox(command, timeoutMs, { pty: true });
 }
 
 /**
@@ -668,10 +744,34 @@ async function createViaCommunityScript(
   const fullOutput = result.stdout + result.stderr;
 
   if (result.code !== 0) {
-    const outputTail = fullOutput.slice(-2000);
     logProvisioningStep(id, 'community_script', 'error', `Script exited with code ${result.code}`);
-    console.warn(`[spyre] Community script failed (exit ${result.code}). Last 2000 chars of output:\n${outputTail}`);
-    throw { code: 'SCRIPT_FAILED', message: `Community script '${script.name}' failed (exit ${result.code}). Output tail: ${outputTail.slice(-500)}` };
+
+    // Extract meaningful error lines from output (skip ANSI escape codes and whiptail box art)
+    const cleanOutput = fullOutput.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // Strip ANSI codes
+    const errorLines = cleanOutput.split('\n')
+      .filter(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        // Skip whiptail box-drawing chars and empty UI lines
+        if (/^[│┌┐└┘├┤┬┴┼─╔╗╚╝║═\s<>]+$/.test(trimmed)) return false;
+        // Keep lines with error indicators
+        return /error|fail|warn|unable|cannot|denied|refused|timeout|pct create/i.test(trimmed);
+      })
+      .slice(-20); // Last 20 error-relevant lines
+
+    const errorSummary = errorLines.length > 0
+      ? errorLines.join('\n')
+      : cleanOutput.slice(-1000);
+
+    console.warn(`[spyre] Community script failed (exit ${result.code}).`);
+    console.warn(`[spyre] Full output length: ${fullOutput.length} chars`);
+    console.warn(`[spyre] Error-relevant lines:\n${errorSummary}`);
+    console.warn(`[spyre] Last 3000 chars of output:\n${cleanOutput.slice(-3000)}`);
+
+    throw {
+      code: 'SCRIPT_FAILED',
+      message: `Community script '${script.name}' failed (exit ${result.code}). Errors:\n${errorSummary.slice(-800)}`
+    };
   }
 
   logProvisioningStep(id, 'community_script', 'success', `${script.name} installed successfully.`);
