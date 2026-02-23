@@ -467,9 +467,26 @@
 		await uploadFiles(files);
 	}
 
+	async function getTerminalCwd(): Promise<string> {
+		try {
+			const activeTab = getActiveTab();
+			const windowIndex = activeTab?.windowIndex ?? 0;
+			const res = await fetch(`/api/terminal/${envId}/cwd?windowIndex=${windowIndex}`);
+			if (res.ok) {
+				const data = await res.json();
+				return data.cwd || '/tmp';
+			}
+		} catch {
+			// fall through
+		}
+		return '/tmp';
+	}
+
 	async function uploadFiles(files: FileList) {
+		const cwd = await getTerminalCwd();
+
 		for (const file of Array.from(files)) {
-			const destPath = `/tmp/${file.name}`;
+			const destPath = `${cwd}/${file.name}`;
 			const formData = new FormData();
 			formData.append('file', file);
 			formData.append('path', destPath);
