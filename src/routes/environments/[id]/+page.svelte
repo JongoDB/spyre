@@ -102,7 +102,7 @@
 			{/if}
 			<div class="info-item">
 				<span class="info-label">Type</span>
-				<span class="info-value">{env.type.toUpperCase()}</span>
+				<span class="info-value">{env.type?.toUpperCase() ?? 'N/A'}</span>
 			</div>
 			{#if env.vmid}
 				<div class="info-item">
@@ -157,9 +157,17 @@
 	</div>
 
 	<!-- Terminal -->
-	{#if env.status === 'running'}
+	{#if env.status === 'running' && env.ip_address}
 		<div class="terminal-section">
 			<TerminalTabs envId={env.id} />
+		</div>
+	{:else if env.status === 'running' && !env.ip_address}
+		<div class="terminal-placeholder card">
+			<div class="placeholder-content">
+				<div class="spinner"></div>
+				<p>Waiting for IP address...</p>
+				<p class="placeholder-sub">The environment is running but hasn't received an IP yet.</p>
+			</div>
 		</div>
 	{:else if env.status === 'provisioning'}
 		<div class="terminal-placeholder card">

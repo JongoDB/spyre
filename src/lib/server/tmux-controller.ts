@@ -128,6 +128,17 @@ export function attachToWindow(
   });
 }
 
+export async function renameWindow(
+  client: SshClient,
+  sessionName: string,
+  windowIndex: number,
+  newName: string
+): Promise<void> {
+  // Sanitize name: strip quotes and special chars
+  const safe = newName.replace(/['"\\`;$]/g, '').slice(0, 50);
+  await sshExec(client, `tmux rename-window -t ${sessionName}:${windowIndex} '${safe}'`);
+}
+
 export async function killWindow(
   client: SshClient,
   sessionName: string,

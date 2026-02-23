@@ -18,30 +18,29 @@
 	let activeTabId = $state('');
 	let loading = $state(true);
 	let creating = $state(false);
+	let editingTabId = $state('');
+	let editName = $state('');
 
 	async function loadWindows() {
 		loading = true;
 		try {
 			const res = await fetch(`/api/terminal/${envId}/windows`);
 			if (res.ok) {
-				const windows: Array<{ index: number; name: string }> = await res.json();
-				if (windows.length > 0) {
-					tabs = windows.map((w) => ({
+				const windows = await res.json();
+				if (Array.isArray(windows) && windows.length > 0) {
+					tabs = windows.map((w: { index: number; name: string }) => ({
 						id: `tab-${w.index}`,
 						windowIndex: w.index,
 						name: w.name
 					}));
 					activeTabId = tabs[0].id;
 				} else {
-					// No existing windows — create the first one
 					await createTab();
 				}
 			} else {
-				// No tmux session yet — create the first tab
 				await createTab();
 			}
 		} catch {
-			// Server may not have a session yet — create one
 			await createTab();
 		} finally {
 			loading = false;
@@ -51,7 +50,11 @@
 	async function createTab() {
 		creating = true;
 		try {
-			const res = await fetch(`/api/terminal/${envId}/windows`, { method: 'POST' });
+			const res = await fetch(`/api/terminal/${envId}/windows`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({})
+			});
 			if (!res.ok) {
 				const body = await res.json().catch(() => ({}));
 				console.error('Failed to create window:', body.message);
@@ -72,15 +75,56 @@
 		}
 	}
 
-	function closeTab(tabId: string) {
+	async function closeTab(tabId: string) {
 		const tab = tabs.find((t) => t.id === tabId);
 		if (!tab) return;
 
+		// Kill the tmux window on the server
+		try {
+			await fetch(`/api/terminal/${envId}/windows/${tab.windowIndex}`, {
+				method: 'DELETE'
+			});
+		} catch {
+			// Still remove the tab locally even if server call fails
+		}
+
 		tabs = tabs.filter((t) => t.id !== tabId);
 
-		// Switch to another tab if we closed the active one
 		if (activeTabId === tabId && tabs.length > 0) {
 			activeTabId = tabs[tabs.length - 1].id;
+		}
+	}
+
+	function startRename(tab: Tab) {
+		editingTabId = tab.id;
+		editName = tab.name;
+	}
+
+	async function commitRename(tab: Tab) {
+		const trimmed = editName.trim();
+		editingTabId = '';
+
+		if (!trimmed || trimmed === tab.name) return;
+
+		tab.name = trimmed;
+
+		try {
+			await fetch(`/api/terminal/${envId}/windows/${tab.windowIndex}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: trimmed })
+			});
+		} catch {
+			// Name updated locally even if server fails
+		}
+	}
+
+	function handleRenameKeydown(e: KeyboardEvent, tab: Tab) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			commitRename(tab);
+		} else if (e.key === 'Escape') {
+			editingTabId = '';
 		}
 	}
 
@@ -96,9 +140,23 @@
 				class="tab"
 				class:active={tab.id === activeTabId}
 				onclick={() => (activeTabId = tab.id)}
+				ondblclick={() => startRename(tab)}
 			>
-				<span class="tab-name">{tab.name}</span>
-				{#if tabs.length > 1}
+				{#if editingTabId === tab.id}
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						class="tab-rename-input"
+						type="text"
+						bind:value={editName}
+						onblur={() => commitRename(tab)}
+						onkeydown={(e) => handleRenameKeydown(e, tab)}
+						onclick={(e) => e.stopPropagation()}
+						autofocus
+					/>
+				{:else}
+					<span class="tab-name">{tab.name}</span>
+				{/if}
+				{#if tabs.length > 1 && editingTabId !== tab.id}
 					<button
 						class="tab-close"
 						onclick={(e: MouseEvent) => { e.stopPropagation(); closeTab(tab.id); }}
@@ -189,6 +247,25 @@
 		color: var(--text-primary);
 		border-bottom-color: var(--accent);
 		background-color: rgba(99, 102, 241, 0.05);
+	}
+
+	.tab-name {
+		max-width: 120px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.tab-rename-input {
+		width: 90px;
+		padding: 1px 4px;
+		font-size: 0.75rem;
+		font-weight: 500;
+		font-family: inherit;
+		color: var(--text-primary);
+		background-color: var(--bg-primary);
+		border: 1px solid var(--accent);
+		border-radius: 2px;
+		outline: none;
 	}
 
 	.tab-close {

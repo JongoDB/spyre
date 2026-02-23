@@ -2,9 +2,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getEnvironment } from '$lib/server/environments';
 import { getConnection } from '$lib/server/ssh-pool';
-import { ensureSession, listWindows, createWindow } from '$lib/server/tmux-controller';
+import { ensureSession, killWindow, renameWindow } from '$lib/server/tmux-controller';
 
-export const GET: RequestHandler = async ({ params }) => {
+export const DELETE: RequestHandler = async ({ params }) => {
   const env = getEnvironment(params.envId);
   if (!env) {
     return json({ code: 'NOT_FOUND', message: 'Environment not found' }, { status: 404 });
@@ -14,18 +14,23 @@ export const GET: RequestHandler = async ({ params }) => {
     return json({ code: 'INVALID_STATE', message: `Environment is ${env.status}, not running` }, { status: 400 });
   }
 
+  const windowIndex = parseInt(params.windowIndex, 10);
+  if (isNaN(windowIndex)) {
+    return json({ code: 'BAD_REQUEST', message: 'Invalid window index' }, { status: 400 });
+  }
+
   try {
     const client = await getConnection(params.envId);
     await ensureSession(client);
-    const windows = await listWindows(client);
-    return json(windows);
+    await killWindow(client, 'spyre', windowIndex);
+    return json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return json({ code: 'SSH_ERROR', message }, { status: 500 });
   }
 };
 
-export const POST: RequestHandler = async ({ params, request }) => {
+export const PATCH: RequestHandler = async ({ params, request }) => {
   const env = getEnvironment(params.envId);
   if (!env) {
     return json({ code: 'NOT_FOUND', message: 'Environment not found' }, { status: 404 });
@@ -35,17 +40,22 @@ export const POST: RequestHandler = async ({ params, request }) => {
     return json({ code: 'INVALID_STATE', message: `Environment is ${env.status}, not running` }, { status: 400 });
   }
 
+  const windowIndex = parseInt(params.windowIndex, 10);
+  if (isNaN(windowIndex)) {
+    return json({ code: 'BAD_REQUEST', message: 'Invalid window index' }, { status: 400 });
+  }
+
+  const body = await request.json().catch(() => ({}));
+  const newName = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!newName) {
+    return json({ code: 'BAD_REQUEST', message: 'Name is required' }, { status: 400 });
+  }
+
   try {
-    const body = await request.json().catch(() => ({}));
-    const windowName = typeof body.name === 'string' ? body.name : undefined;
     const client = await getConnection(params.envId);
     await ensureSession(client);
-    const windowIndex = await createWindow(client, 'spyre', windowName);
-
-    // Fetch the actual name tmux assigned
-    const windows = await listWindows(client);
-    const created = windows.find(w => w.index === windowIndex);
-    return json({ windowIndex, name: created?.name ?? `window-${windowIndex}` }, { status: 201 });
+    await renameWindow(client, 'spyre', windowIndex, newName);
+    return json({ ok: true, name: newName });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return json({ code: 'SSH_ERROR', message }, { status: 500 });
