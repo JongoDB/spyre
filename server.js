@@ -1,0 +1,235 @@
+import { handler } from './build/handler.js';
+import { createServer } from 'node:http';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { parse } from 'yaml';
+import { WebSocketServer } from 'ws';
+import { Client as SshClient } from 'ssh2';
+import Database from 'better-sqlite3';
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+const configPath = resolve(process.cwd(), 'environment.yaml');
+const config = parse(readFileSync(configPath, 'utf-8'));
+const dbPath = resolve(process.cwd(), config.controller.db_path);
+const db = new Database(dbPath);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+function getEnvironment(id) {
+  return db.prepare('SELECT * FROM environments WHERE id = ?').get(id);
+}
+
+// =============================================================================
+// SSH Pool
+// =============================================================================
+
+const sshPool = new Map();
+
+function readPrivateKey() {
+  const keyPath = config.controller.ssh_key_path.replace('~', process.env.HOME ?? '');
+  try {
+    return readFileSync(keyPath);
+  } catch {
+    return null;
+  }
+}
+
+function getConnection(envId) {
+  const env = getEnvironment(envId);
+  if (!env) return Promise.reject(new Error('Environment not found'));
+  if (!env.ip_address) return Promise.reject(new Error('No IP address'));
+
+  const host = env.ip_address;
+  const port = env.ssh_port || 22;
+  const user = env.ssh_user || 'root';
+
+  let password;
+  if (env.metadata) {
+    try { password = JSON.parse(env.metadata).root_password; } catch { /* ignore */ }
+  }
+
+  const existing = sshPool.get(envId);
+  if (existing && existing.ready && existing.host === host) {
+    return Promise.resolve(existing.client);
+  }
+
+  if (existing) {
+    try { existing.client.end(); } catch { /* ignore */ }
+    sshPool.delete(envId);
+  }
+
+  return new Promise((resolve, reject) => {
+    const client = new SshClient();
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        client.end();
+        sshPool.delete(envId);
+        reject(new Error('SSH connection timed out'));
+      }
+    }, 10000);
+
+    client.on('ready', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sshPool.set(envId, { client, host, ready: true });
+      resolve(client);
+    });
+
+    client.on('error', (err) => {
+      if (!settled) { settled = true; clearTimeout(timer); sshPool.delete(envId); reject(err); }
+    });
+
+    client.on('close', () => {
+      const e = sshPool.get(envId);
+      if (e?.client === client) sshPool.delete(envId);
+    });
+
+    client.on('end', () => {
+      const e = sshPool.get(envId);
+      if (e?.client === client) sshPool.delete(envId);
+    });
+
+    const privateKey = readPrivateKey();
+    client.connect({
+      host, port, username: user,
+      privateKey, password,
+      keepaliveInterval: 30000, keepaliveCountMax: 5, readyTimeout: 10000,
+      hostVerifier: () => true
+    });
+  });
+}
+
+// =============================================================================
+// tmux Controller
+// =============================================================================
+
+function sshExec(client, command, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('SSH exec timeout')), timeoutMs);
+    client.exec(command, (err, stream) => {
+      if (err) { clearTimeout(timer); reject(err); return; }
+      let stdout = '', stderr = '';
+      stream.on('data', (d) => { stdout += d.toString(); });
+      stream.stderr.on('data', (d) => { stderr += d.toString(); });
+      stream.on('close', (code) => { clearTimeout(timer); resolve({ code: code ?? 0, stdout, stderr }); });
+    });
+  });
+}
+
+async function ensureSession(client, sessionName = 'spyre') {
+  await sshExec(client, 'which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux 2>/dev/null) || (apk add tmux 2>/dev/null) || true', 30000);
+  const check = await sshExec(client, `tmux has-session -t ${sessionName} 2>/dev/null`);
+  if (check.code !== 0) {
+    await sshExec(client, `tmux new-session -d -s ${sessionName}`);
+  }
+}
+
+function attachToWindow(client, sessionName = 'spyre', windowIndex) {
+  return new Promise((resolve, reject) => {
+    client.shell({ rows: 24, cols: 80, term: 'xterm-256color' }, (err, stream) => {
+      if (err) { reject(err); return; }
+      const target = windowIndex !== undefined ? `${sessionName}:${windowIndex}` : sessionName;
+      stream.write(`tmux attach-session -t ${target}\n`);
+      resolve(stream);
+    });
+  });
+}
+
+// =============================================================================
+// Terminal Manager
+// =============================================================================
+
+function sendJson(ws, data) {
+  if (ws.readyState === 1) ws.send(JSON.stringify(data));
+}
+
+async function attachTerminal(ws, options) {
+  const { envId, windowIndex, cols, rows } = options;
+
+  const env = getEnvironment(envId);
+  if (!env) { sendJson(ws, { type: 'error', message: 'Environment not found' }); ws.close(); return; }
+  if (env.status !== 'running') { sendJson(ws, { type: 'error', message: `Environment is ${env.status}` }); ws.close(); return; }
+  if (!env.ip_address) { sendJson(ws, { type: 'error', message: 'No IP address' }); ws.close(); return; }
+
+  let client;
+  try { client = await getConnection(envId); }
+  catch (err) { sendJson(ws, { type: 'error', message: `SSH failed: ${err.message}` }); ws.close(); return; }
+
+  let channel;
+  try {
+    await ensureSession(client);
+    channel = await attachToWindow(client, 'spyre', windowIndex);
+  } catch (err) { sendJson(ws, { type: 'error', message: `tmux failed: ${err.message}` }); ws.close(); return; }
+
+  if (cols && rows) channel.setWindow(rows, cols, 0, 0);
+  sendJson(ws, { type: 'connected', windowIndex: windowIndex ?? 0 });
+
+  channel.on('data', (data) => { if (ws.readyState === 1) ws.send(data); });
+
+  ws.on('message', (data) => {
+    if (typeof data === 'string') {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === 'resize' && msg.cols && msg.rows) { channel.setWindow(msg.rows, msg.cols, 0, 0); return; }
+      } catch { /* not JSON */ }
+      channel.write(data);
+    } else {
+      channel.write(data);
+    }
+  });
+
+  channel.on('close', () => { sendJson(ws, { type: 'disconnected', reason: 'Channel closed' }); if (ws.readyState === 1) ws.close(); });
+  channel.on('error', (err) => { sendJson(ws, { type: 'error', message: err.message }); });
+  ws.on('close', () => { try { channel.close(); } catch { /* ignore */ } });
+  ws.on('error', () => { try { channel.close(); } catch { /* ignore */ } });
+
+  try { db.prepare("UPDATE environments SET last_accessed = datetime('now') WHERE id = ?").run(envId); } catch { /* non-critical */ }
+}
+
+// =============================================================================
+// HTTP + WebSocket Server
+// =============================================================================
+
+const PORT = parseInt(process.env.PORT || '3000', 10);
+const server = createServer(handler);
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+  const url = req.url;
+  if (!url) { socket.destroy(); return; }
+
+  const match = url.match(/^\/api\/terminal\/([^/?]+)/);
+  if (!match || url.includes('/windows')) { socket.destroy(); return; }
+
+  const envId = match[1];
+  const queryStart = url.indexOf('?');
+  const params = new URLSearchParams(queryStart >= 0 ? url.slice(queryStart) : '');
+  const windowIndex = params.get('windowIndex') ? parseInt(params.get('windowIndex'), 10) : undefined;
+  const cols = params.get('cols') ? parseInt(params.get('cols'), 10) : undefined;
+  const rows = params.get('rows') ? parseInt(params.get('rows'), 10) : undefined;
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+    attachTerminal(ws, { envId, windowIndex, cols, rows });
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[spyre] Production server listening on http://0.0.0.0:${PORT}`);
+});
+
+// Cleanup on shutdown
+process.on('SIGTERM', () => {
+  for (const [, entry] of sshPool) {
+    try { entry.client.end(); } catch { /* ignore */ }
+  }
+  server.close();
+  db.close();
+});

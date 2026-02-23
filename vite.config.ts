@@ -1,11 +1,12 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import { readFileSync } from 'node:fs';
+import { spyreWebSocket } from './vite-ws-plugin';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default defineConfig({
-	plugins: [sveltekit()],
+	plugins: [sveltekit(), spyreWebSocket()],
 	define: {
 		__APP_VERSION__: JSON.stringify(pkg.version)
 	},

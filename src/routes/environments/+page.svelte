@@ -186,22 +186,28 @@
 					</div>
 
 					<div class="env-card-actions">
-						{#if env.status === 'stopped'}
-							<button
-								class="btn btn-secondary btn-sm"
-								disabled={actionLoading[env.id]}
-								onclick={() => performAction(env.id, 'start')}
-							>
-								{actionLoading[env.id] ? 'Starting...' : 'Start'}
-							</button>
-						{/if}
 						{#if env.status === 'running'}
+							<a href="/environments/{env.id}" class="btn btn-primary btn-sm">
+								Open
+							</a>
 							<button
 								class="btn btn-secondary btn-sm"
 								disabled={actionLoading[env.id]}
 								onclick={() => performAction(env.id, 'stop')}
 							>
 								{actionLoading[env.id] ? 'Stopping...' : 'Stop'}
+							</button>
+						{/if}
+						{#if env.status === 'stopped'}
+							<a href="/environments/{env.id}" class="btn btn-secondary btn-sm">
+								Open
+							</a>
+							<button
+								class="btn btn-secondary btn-sm"
+								disabled={actionLoading[env.id]}
+								onclick={() => performAction(env.id, 'start')}
+							>
+								{actionLoading[env.id] ? 'Starting...' : 'Start'}
 							</button>
 						{/if}
 						{#if env.status === 'running' || env.status === 'provisioning'}
