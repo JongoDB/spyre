@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
 CREATE TABLE IF NOT EXISTS provisioning_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
-    phase           TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision')),
+    phase           TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script')),
     step            TEXT NOT NULL,                           -- human-readable step name
     status          TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'skipped')),
     output          TEXT,                                    -- command output (stdout + stderr)
@@ -167,3 +167,195 @@ CREATE TABLE IF NOT EXISTS provisioning_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_provisioning_log_env ON provisioning_log(env_id);
+
+-- =============================================================================
+-- Resource Presets — Named CPU/RAM/disk configurations
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS resource_presets (
+    id              TEXT PRIMARY KEY,                        -- UUID v4
+    name            TEXT UNIQUE NOT NULL,                    -- e.g. "Small", "Medium", "Large"
+    description     TEXT,
+    cores           INTEGER NOT NULL DEFAULT 1,
+    memory          INTEGER NOT NULL DEFAULT 512,            -- MB
+    swap            INTEGER NOT NULL DEFAULT 0,              -- MB
+    disk            INTEGER NOT NULL DEFAULT 8,              -- GB
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Network Profiles — Named network configurations
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS network_profiles (
+    id              TEXT PRIMARY KEY,                        -- UUID v4
+    name            TEXT UNIQUE NOT NULL,                    -- e.g. "DHCP on vmbr0", "Static LAN"
+    description     TEXT,
+    bridge          TEXT NOT NULL DEFAULT 'vmbr0',
+    ip_mode         TEXT NOT NULL DEFAULT 'dhcp'             -- dhcp | static
+                    CHECK (ip_mode IN ('dhcp', 'static')),
+    ip_address      TEXT,                                    -- for static mode (CIDR notation)
+    gateway         TEXT,                                    -- for static mode
+    ip6_mode        TEXT DEFAULT 'auto'                      -- auto | static | disabled
+                    CHECK (ip6_mode IN ('auto', 'static', 'disabled')),
+    ip6_address     TEXT,                                    -- for static IPv6
+    ip6_gateway     TEXT,                                    -- for static IPv6
+    dns             TEXT,                                    -- nameserver(s), space-separated
+    dns_search      TEXT,                                    -- search domain
+    vlan            INTEGER,                                 -- VLAN tag (null = none)
+    mtu             INTEGER,                                 -- MTU (null = default)
+    firewall        INTEGER NOT NULL DEFAULT 0,              -- 0 = off, 1 = on
+    rate_limit       REAL,                                    -- MB/s (null = unlimited)
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Software Pools — Reusable named software collections
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS software_pools (
+    id              TEXT PRIMARY KEY,                        -- UUID v4
+    name            TEXT UNIQUE NOT NULL,                    -- e.g. "Node.js Dev Stack"
+    description     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Software Pool Items — Individual items within a pool, ordered
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS software_pool_items (
+    id              TEXT PRIMARY KEY,                        -- UUID v4
+    pool_id         TEXT NOT NULL REFERENCES software_pools(id) ON DELETE CASCADE,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    item_type       TEXT NOT NULL CHECK (item_type IN ('package', 'script', 'file')),
+    content         TEXT NOT NULL,                           -- package name(s), script content, or file content
+    destination     TEXT,                                    -- for 'file' type: target path in container
+    label           TEXT,                                    -- human-readable label
+    post_command    TEXT,                                    -- command to run after this item
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_software_pool_items_pool ON software_pool_items(pool_id, sort_order);
+
+-- =============================================================================
+-- Templates — Full environment definitions with all Proxmox params
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS templates (
+    id                      TEXT PRIMARY KEY,                -- UUID v4
+    name                    TEXT UNIQUE NOT NULL,
+    description             TEXT,
+    type                    TEXT NOT NULL DEFAULT 'lxc'
+                            CHECK (type IN ('lxc', 'vm')),
+
+    -- References to building blocks (nullable)
+    resource_preset_id      TEXT REFERENCES resource_presets(id) ON DELETE SET NULL,
+    network_profile_id      TEXT REFERENCES network_profiles(id) ON DELETE SET NULL,
+
+    -- OS fields
+    os_template             TEXT,                            -- Proxmox template volid
+    os_type                 TEXT,                            -- e.g. "ubuntu", "debian", "alpine"
+    os_version              TEXT,                            -- e.g. "22.04", "12"
+
+    -- Inline resource overrides (null = use preset)
+    cores                   INTEGER,
+    memory                  INTEGER,                         -- MB
+    swap                    INTEGER,                         -- MB
+    disk                    INTEGER,                         -- GB
+    storage                 TEXT,                            -- Proxmox storage pool
+
+    -- Inline network overrides (null = use profile)
+    bridge                  TEXT,
+    ip_mode                 TEXT CHECK (ip_mode IS NULL OR ip_mode IN ('dhcp', 'static')),
+    ip_address              TEXT,
+    gateway                 TEXT,
+    dns                     TEXT,
+    vlan                    INTEGER,
+
+    -- LXC settings
+    unprivileged            INTEGER NOT NULL DEFAULT 1,      -- 0 or 1
+    nesting                 INTEGER NOT NULL DEFAULT 1,      -- 0 or 1
+    features                TEXT,                            -- JSON: additional features string
+    startup_order           INTEGER,
+    protection              INTEGER NOT NULL DEFAULT 0,      -- 0 or 1
+
+    -- Access settings
+    ssh_enabled             INTEGER NOT NULL DEFAULT 1,      -- 0 or 1
+    ssh_keys                TEXT,                            -- SSH public keys to inject
+    root_password           TEXT,                            -- default root password (null = auto-generate)
+    default_user            TEXT,                            -- create this user during provisioning
+    timezone                TEXT DEFAULT 'host',
+
+    -- Community script reference
+    community_script_slug   TEXT,                            -- references community_scripts_cache(slug)
+
+    -- Display / meta
+    installed_software      TEXT,                            -- JSON array of software labels for display
+    custom_script           TEXT,                            -- shell script to run during provisioning
+    tags                    TEXT,                            -- comma-separated tags for filtering
+
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_templates_type ON templates(type);
+CREATE INDEX IF NOT EXISTS idx_templates_community ON templates(community_script_slug);
+
+-- =============================================================================
+-- Template Software Pools — Many-to-many junction table
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS template_software_pools (
+    template_id     TEXT NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+    pool_id         TEXT NOT NULL REFERENCES software_pools(id) ON DELETE CASCADE,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (template_id, pool_id)
+);
+
+-- =============================================================================
+-- Community Scripts Cache — Cached metadata from community-scripts repo
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS community_scripts_cache (
+    slug            TEXT PRIMARY KEY,                        -- unique identifier from repo
+    name            TEXT NOT NULL,
+    description     TEXT,
+    type            TEXT CHECK (type IN ('ct', 'vm')),       -- container or VM
+    categories      TEXT,                                    -- JSON array
+    website         TEXT,
+    logo_url        TEXT,
+    documentation   TEXT,
+    interface_port  INTEGER,
+    default_cpu     INTEGER,
+    default_ram     INTEGER,                                 -- MB
+    default_disk    INTEGER,                                 -- GB
+    default_os      TEXT,
+    default_os_version TEXT,
+    script_path     TEXT,                                    -- path in repo
+    install_methods TEXT,                                    -- JSON array
+    default_username TEXT,
+    default_password TEXT,
+    notes           TEXT,                                    -- JSON array
+    fetched_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    source_hash     TEXT                                     -- hash of source JSON for change detection
+);
+
+-- =============================================================================
+-- Alter environments — Add template reference
+-- =============================================================================
+-- Note: SQLite doesn't support ALTER TABLE ADD CONSTRAINT, so FK is informational.
+-- The application layer enforces the relationship.
+-- ALTER TABLE environments ADD COLUMN template_id TEXT REFERENCES templates(id) ON DELETE SET NULL;
+-- Using IF NOT EXISTS pattern for safety:
+CREATE TABLE IF NOT EXISTS _env_template_migration_check (done INTEGER);
+INSERT OR IGNORE INTO _env_template_migration_check VALUES (1);
+
+-- =============================================================================
+-- Seed Data — Default resource presets and network profile
+-- =============================================================================
+INSERT OR IGNORE INTO resource_presets (id, name, description, cores, memory, swap, disk) VALUES
+    ('preset-tiny',   'Tiny',   '1 vCPU, 256 MB RAM, 2 GB disk',   1,  256,    0,  2),
+    ('preset-small',  'Small',  '1 vCPU, 512 MB RAM, 8 GB disk',   1,  512,  256,  8),
+    ('preset-medium', 'Medium', '2 vCPU, 2 GB RAM, 20 GB disk',    2, 2048,  512, 20),
+    ('preset-large',  'Large',  '4 vCPU, 8 GB RAM, 50 GB disk',    4, 8192, 1024, 50),
+    ('preset-xlarge', 'XLarge', '8 vCPU, 16 GB RAM, 100 GB disk',  8,16384, 2048,100);
+
+INSERT OR IGNORE INTO network_profiles (id, name, description, bridge, ip_mode, dns) VALUES
+    ('profile-dhcp', 'DHCP on vmbr0', 'Automatic IP via DHCP on the default bridge', 'vmbr0', 'dhcp', '8.8.8.8');

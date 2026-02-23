@@ -114,19 +114,29 @@ export async function getLxcConfig(node: string, vmid: number): Promise<ProxmoxL
   );
 }
 
+export interface CreateLxcConfig {
+  vmid: number;
+  hostname: string;
+  ostemplate: string;
+  cores: number;
+  memory: number;
+  rootfs: string;
+  net0: string;
+  start?: boolean;
+  sshPublicKeys?: string;
+  password?: string;
+  swap?: number;
+  nameserver?: string;
+  searchdomain?: string;
+  unprivileged?: boolean;
+  features?: string;
+  timezone?: string;
+  onboot?: boolean;
+}
+
 export async function createLxc(
   node: string,
-  config: {
-    vmid: number;
-    hostname: string;
-    ostemplate: string;
-    cores: number;
-    memory: number;
-    rootfs: string;
-    net0: string;
-    start?: boolean;
-    sshPublicKeys?: string;
-  }
+  config: CreateLxcConfig
 ): Promise<string> {
   const body = new URLSearchParams();
   body.set('vmid', String(config.vmid));
@@ -141,6 +151,30 @@ export async function createLxc(
   }
   if (config.sshPublicKeys) {
     body.set('ssh-public-keys', config.sshPublicKeys);
+  }
+  if (config.password) {
+    body.set('password', config.password);
+  }
+  if (config.swap != null) {
+    body.set('swap', String(config.swap));
+  }
+  if (config.nameserver) {
+    body.set('nameserver', config.nameserver);
+  }
+  if (config.searchdomain) {
+    body.set('searchdomain', config.searchdomain);
+  }
+  if (config.unprivileged != null) {
+    body.set('unprivileged', config.unprivileged ? '1' : '0');
+  }
+  if (config.features) {
+    body.set('features', config.features);
+  }
+  if (config.timezone) {
+    body.set('timezone', config.timezone);
+  }
+  if (config.onboot != null) {
+    body.set('onboot', config.onboot ? '1' : '0');
   }
 
   return proxmoxFetch<string>(`/nodes/${encodeURIComponent(node)}/lxc`, {

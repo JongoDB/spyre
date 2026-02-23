@@ -1,8 +1,19 @@
 import { v4 as uuid } from 'uuid';
+import { randomBytes } from 'node:crypto';
 import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import * as proxmox from './proxmox';
 import type { Environment, CreateEnvironmentRequest } from '$lib/types/environment';
+
+function generatePassword(length = 16): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
+  const bytes = randomBytes(length);
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars[bytes[i] % chars.length];
+  }
+  return result;
+}
 
 export function listEnvironments(): Environment[] {
   const db = getDb();
@@ -35,11 +46,22 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
   const storage = req.storage ?? config.defaults.storage;
   const sshUser = req.ssh_user ?? config.defaults.ssh_user;
 
+  // Generate root password if not provided
+  const rootPassword = req.password || generatePassword();
+
+  // Build metadata with password for UI display
+  const metadata: Record<string, unknown> = {
+    root_password: rootPassword,
+    ssh_enabled: req.ssh_enabled !== false,
+    unprivileged: req.unprivileged !== false,
+    nesting: req.nesting !== false
+  };
+
   // Insert pending environment into DB first
   db.prepare(`
-    INSERT INTO environments (id, name, type, status, node, ssh_user)
-    VALUES (?, ?, ?, 'provisioning', ?, ?)
-  `).run(id, req.name, req.type, node, sshUser);
+    INSERT INTO environments (id, name, type, status, node, ssh_user, metadata)
+    VALUES (?, ?, ?, 'provisioning', ?, ?, ?)
+  `).run(id, req.name, req.type, node, sshUser, JSON.stringify(metadata));
 
   try {
     // Get next available VMID
@@ -47,18 +69,41 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
 
     // Build network config
     const ip = req.ip ?? 'dhcp';
-    const net0 = ip === 'dhcp'
-      ? `name=eth0,bridge=${bridge},ip=dhcp`
-      : `name=eth0,bridge=${bridge},ip=${ip},gw=${config.defaults.gateway}`;
+    let net0: string;
+    if (ip === 'dhcp') {
+      net0 = `name=eth0,bridge=${bridge},ip=dhcp,ip6=auto`;
+    } else {
+      const gateway = config.defaults.gateway;
+      if (!gateway) {
+        console.warn('[spyre] Static IP requested but defaults.gateway is empty in environment.yaml');
+      }
+      net0 = `name=eth0,bridge=${bridge},ip=${ip}`;
+      if (gateway) {
+        net0 += `,gw=${gateway}`;
+      }
+    }
+
+    // DNS config
+    const nameserver = req.nameserver ?? config.defaults.dns ?? '8.8.8.8';
+
+    // Unprivileged and nesting defaults
+    const unprivileged = req.unprivileged !== false;
+    const nesting = req.nesting !== false;
+    const features = nesting ? 'nesting=1' : undefined;
+
+    // Swap defaults to 0
+    const swap = req.swap ?? 0;
 
     // Read SSH public key for injection
     let sshPubKey: string | undefined;
-    try {
-      const { readFileSync } = await import('node:fs');
-      const keyPath = config.controller.ssh_key_path.replace('~', process.env.HOME ?? '');
-      sshPubKey = readFileSync(`${keyPath}.pub`, 'utf-8').trim();
-    } catch {
-      // No SSH key available — proceed without
+    if (req.ssh_enabled !== false) {
+      try {
+        const { readFileSync } = await import('node:fs');
+        const keyPath = config.controller.ssh_key_path.replace('~', process.env.HOME ?? '');
+        sshPubKey = readFileSync(`${keyPath}.pub`, 'utf-8').trim();
+      } catch {
+        console.warn('[spyre] SSH public key not found at configured path — container will rely on password auth');
+      }
     }
 
     // Create LXC via Proxmox API
@@ -71,7 +116,14 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
       rootfs: `${storage}:${req.disk}`,
       net0,
       start: true,
-      sshPublicKeys: sshPubKey
+      sshPublicKeys: sshPubKey,
+      password: rootPassword,
+      swap,
+      nameserver,
+      unprivileged,
+      features,
+      timezone: 'host',
+      onboot: false
     });
 
     // Update DB with VMID

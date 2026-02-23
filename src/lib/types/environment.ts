@@ -37,4 +37,11 @@ export interface CreateEnvironmentRequest {
   storage?: string;
   ip?: string;
   ssh_user?: string;
+  password?: string;
+  swap?: number;
+  nameserver?: string;
+  unprivileged?: boolean;
+  nesting?: boolean;
+  ssh_enabled?: boolean;
+  template_id?: string;
 }
