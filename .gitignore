@@ -1,0 +1,37 @@
+node_modules/
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Spyre data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+/etc/spyre/
+
+# IDE
+.vscode/
+.idea/
+coverage/

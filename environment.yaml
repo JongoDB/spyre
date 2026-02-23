@@ -1,0 +1,47 @@
+# =============================================================================
+# Spyre Environment Configuration
+# =============================================================================
+#
+# All infrastructure-specific values live here.
+# Never hardcode IPs, hostnames, storage pool names, bridge names, or paths.
+#
+# Referenced by:
+#   - src/lib/server/env-config.ts (loaded as typed singleton)
+#   - CLAUDE.md (coding conventions require using this file)
+# =============================================================================
+
+controller:
+  hostname: "spyre-controller"
+  ip: "172.17.0.2"
+  url: "https://spyre-controller"
+  ssh_key_path: "~/.ssh/spyre_ed25519"
+  ssh_public_key: ""
+  data_dir: "./data"
+  config_dir: "./configs"
+  db_path: "./data/spyre.db"
+
+proxmox:
+  host: "192.168.1.200"
+  port: 8006
+  node_name: "pve-node"
+  token_id: "root@pam!claude"
+  verify_ssl: false
+
+defaults:
+  bridge: "vmbr0"
+  storage: "local-lvm"
+  dns: "8.8.8.8"
+  gateway: ""
+  subnet: ""
+  ssh_user: "root"
+
+network:
+  subnet: ""
+  gateway: ""
+  dns: "8.8.8.8"
+
+claude:
+  auth_method: "oauth"
+  health_check_interval: 60000
+  task_timeout: 600000
+  auth_json_path: "~/.config/claude-code/auth.json"

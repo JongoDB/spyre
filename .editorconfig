@@ -1,0 +1,60 @@
+# =============================================================================
+# Spyre — Editor Configuration
+# =============================================================================
+#
+# Ensures consistent formatting regardless of editor or Claude Code session.
+# Most editors and Claude Code respect .editorconfig natively.
+#
+# See also: CLAUDE.md for TypeScript-specific conventions.
+# =============================================================================
+
+root = true
+
+# Default for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# TypeScript / JavaScript
+[*.{ts,js,mjs,cjs}]
+indent_size = 2
+max_line_length = 100
+
+# Svelte components
+[*.svelte]
+indent_size = 2
+max_line_length = 100
+
+# JSON
+[*.json]
+indent_size = 2
+
+# YAML (configs, environment.yaml)
+[*.{yaml,yml}]
+indent_size = 2
+
+# SQL
+[*.sql]
+indent_size = 4
+
+# Shell scripts
+[*.sh]
+indent_size = 2
+shell_variant = bash
+
+# Markdown
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# Caddyfile
+[Caddyfile]
+indent_size = 4
+
+# Makefile (requires tabs)
+[Makefile]
+indent_style = tab
