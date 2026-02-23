@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import type { Snippet } from 'svelte';
+	import Toast from '$lib/components/Toast.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -139,6 +140,8 @@
 		{@render children()}
 	</main>
 </div>
+
+<Toast />
 
 <style>
 	.app-shell {

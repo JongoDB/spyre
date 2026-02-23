@@ -2,6 +2,8 @@
 	interface Props {
 		sessionRestored?: boolean;
 		broadcastActive?: boolean;
+		fontSize?: number;
+		recording?: boolean;
 		onsplith?: () => void;
 		onsplitv?: () => void;
 		onzoom?: () => void;
@@ -9,18 +11,30 @@
 		onsnapshot?: () => void;
 		onbroadcast?: () => void;
 		oncommand?: (cmd: string) => void;
+		onfontsizeup?: () => void;
+		onfontsizedown?: () => void;
+		onrecord?: () => void;
+		onupload?: () => void;
+		ondownload?: () => void;
 	}
 
 	let {
 		sessionRestored = false,
 		broadcastActive = false,
+		fontSize = 14,
+		recording = false,
 		onsplith,
 		onsplitv,
 		onzoom,
 		onsearch,
 		onsnapshot,
 		onbroadcast,
-		oncommand
+		oncommand,
+		onfontsizeup,
+		onfontsizedown,
+		onrecord,
+		onupload,
+		ondownload
 	}: Props = $props();
 
 	import QuickCommands from './QuickCommands.svelte';
@@ -84,6 +98,50 @@
 		</button>
 	</div>
 
+	<!-- Font size controls -->
+	<div class="toolbar-group">
+		<button class="toolbar-btn" onclick={onfontsizedown} title="Decrease font size (Ctrl+-)">
+			<span class="font-btn">A-</span>
+		</button>
+		<span class="font-size-label">{fontSize}px</span>
+		<button class="toolbar-btn" onclick={onfontsizeup} title="Increase font size (Ctrl+=)">
+			<span class="font-btn">A+</span>
+		</button>
+	</div>
+
+	<!-- Record button -->
+	<div class="toolbar-group">
+		<button
+			class="toolbar-btn"
+			class:record-active={recording}
+			onclick={onrecord}
+			title={recording ? 'Stop recording' : 'Start recording'}
+		>
+			<span class="record-dot" class:pulsing={recording}></span>
+			<span>{recording ? 'Stop' : 'Rec'}</span>
+		</button>
+	</div>
+
+	<!-- File upload/download -->
+	<div class="toolbar-group">
+		<button class="toolbar-btn" onclick={onupload} title="Upload file">
+			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+				<path d="M11 9v2a1 1 0 01-1 1H4a1 1 0 01-1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				<polyline points="9,4 7,2 5,4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				<line x1="7" y1="2" x2="7" y2="9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+			</svg>
+			<span>Upload</span>
+		</button>
+		<button class="toolbar-btn" onclick={ondownload} title="Download file">
+			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+				<path d="M11 9v2a1 1 0 01-1 1H4a1 1 0 01-1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				<polyline points="5,6 7,8 9,6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				<line x1="7" y1="2" x2="7" y2="8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+			</svg>
+			<span>Download</span>
+		</button>
+	</div>
+
 	<div class="toolbar-end">
 		{#if showRestoredBadge}
 			<span class="restored-badge" class:fading={!sessionRestored}>Session restored</span>
@@ -102,6 +160,7 @@
 		border-top: none;
 		flex-shrink: 0;
 		min-height: 32px;
+		flex-wrap: wrap;
 	}
 
 	.toolbar-group {
@@ -147,6 +206,52 @@
 	.toolbar-btn:active {
 		background-color: rgba(255, 255, 255, 0.1);
 	}
+
+	/* Font size */
+
+	.font-btn {
+		font-weight: 700;
+		font-size: 0.6875rem;
+	}
+
+	.font-size-label {
+		font-size: 0.625rem;
+		font-weight: 600;
+		color: var(--text-secondary);
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		min-width: 30px;
+		text-align: center;
+	}
+
+	/* Record button */
+
+	.record-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background-color: var(--text-secondary);
+		transition: background-color var(--transition);
+	}
+
+	.record-active {
+		color: var(--error);
+	}
+
+	.record-active .record-dot {
+		background-color: var(--error);
+	}
+
+	.record-dot.pulsing {
+		animation: pulse 1.2s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
+
+	/* Restored badge */
 
 	.restored-badge {
 		display: inline-flex;

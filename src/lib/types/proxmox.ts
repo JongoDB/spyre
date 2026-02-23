@@ -20,6 +20,7 @@ export interface ProxmoxLxc {
   vmid: number;
   name: string;
   status: 'running' | 'stopped';
+  cpu: number;
   cpus: number;
   maxmem: number;
   maxdisk: number;

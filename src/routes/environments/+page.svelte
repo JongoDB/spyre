@@ -2,12 +2,47 @@
 	import { onMount, onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 	import type { Environment } from '$lib/types/environment';
+	import { addToast } from '$lib/stores/toast.svelte';
+	import ResourceBar from '$lib/components/ResourceBar.svelte';
+
+	interface ResourceMetrics {
+		cpuPercent: number;
+		memUsed: number;
+		memTotal: number;
+		diskUsed: number;
+		diskTotal: number;
+		netIn: number;
+		netOut: number;
+		uptime: number;
+	}
+
+	interface HealthStatus {
+		state: 'healthy' | 'degraded' | 'unreachable';
+		responseMs: number | null;
+		lastChecked: string;
+	}
+
+	interface EnvironmentLiveData {
+		id: string;
+		status: string;
+		ipAddress: string | null;
+		resources: ResourceMetrics | null;
+		health: HealthStatus | null;
+	}
 
 	let { data }: { data: PageData } = $props();
 
 	let environments = $state<Environment[]>(data.environments);
 	let search = $state('');
 	let statusFilter = $state('all');
+
+	// Live data maps
+	let resourceMap = $state<Map<string, ResourceMetrics>>(new Map());
+	let healthMap = $state<Map<string, HealthStatus>>(new Map());
+
+	// Bulk selection
+	let selectedIds = $state<Set<string>>(new Set());
+	let bulkLoading = $state(false);
 
 	let filtered = $derived(
 		environments.filter((env) => {
@@ -20,52 +55,60 @@
 		})
 	);
 
+	let allFilteredSelected = $derived(
+		filtered.length > 0 && filtered.every((e) => selectedIds.has(e.id))
+	);
+
 	let actionLoading = $state<Record<string, boolean>>({});
 
-	// Poll for status updates every 5 seconds when any environment is provisioning
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	// SSE connection
+	let eventSource: EventSource | null = null;
 
-	function hasProvisioningEnv(): boolean {
-		return environments.some(e => e.status === 'provisioning' || e.status === 'destroying');
-	}
+	function connectSSE() {
+		eventSource = new EventSource('/api/environments/stream');
+		eventSource.onmessage = (event) => {
+			try {
+				const liveData: EnvironmentLiveData[] = JSON.parse(event.data);
+				const newResourceMap = new Map<string, ResourceMetrics>();
+				const newHealthMap = new Map<string, HealthStatus>();
 
-	async function pollStatuses() {
-		try {
-			const res = await fetch('/api/environments');
-			if (res.ok) {
-				const updated: Environment[] = await res.json();
-				environments = updated;
+				for (const item of liveData) {
+					// Update environment status from live data
+					const env = environments.find((e) => e.id === item.id);
+					if (env && env.status !== item.status) {
+						env.status = item.status as Environment['status'];
+					}
+					if (env && item.ipAddress && !env.ip_address) {
+						env.ip_address = item.ipAddress;
+					}
+					if (item.resources) {
+						newResourceMap.set(item.id, item.resources);
+					}
+					if (item.health) {
+						newHealthMap.set(item.id, item.health);
+					}
+				}
+
+				// Reassign to trigger reactivity
+				environments = [...environments];
+				resourceMap = newResourceMap;
+				healthMap = newHealthMap;
+			} catch {
+				// Ignore parse errors
 			}
-		} catch {
-			// Ignore poll errors
-		}
-	}
-
-	function startPolling() {
-		if (pollTimer) return;
-		pollTimer = setInterval(async () => {
-			await pollStatuses();
-			if (!hasProvisioningEnv()) {
-				stopPolling();
-			}
-		}, 3000);
-	}
-
-	function stopPolling() {
-		if (pollTimer) {
-			clearInterval(pollTimer);
-			pollTimer = null;
-		}
+		};
+		eventSource.onerror = () => {
+			// EventSource will auto-reconnect
+		};
 	}
 
 	onMount(() => {
-		if (hasProvisioningEnv()) {
-			startPolling();
-		}
+		connectSSE();
 	});
 
 	onDestroy(() => {
-		stopPolling();
+		eventSource?.close();
+		eventSource = null;
 	});
 
 	async function performAction(envId: string, action: 'start' | 'stop' | 'delete') {
@@ -85,17 +128,97 @@
 
 			if (!res.ok) {
 				const body = await res.json().catch(() => ({}));
-				alert(body.message ?? `Failed to ${action} environment.`);
+				addToast(body.message ?? `Failed to ${action} environment.`, 'error');
 				return;
 			}
 
-			// Refresh the list
-			await pollStatuses();
+			addToast(`Environment ${action === 'delete' ? 'deleted' : action === 'start' ? 'started' : 'stopped'} successfully.`, 'success');
+
+			// Refresh list if deleted
+			if (action === 'delete') {
+				environments = environments.filter((e) => e.id !== envId);
+				selectedIds.delete(envId);
+				selectedIds = new Set(selectedIds);
+			}
 		} catch {
-			alert(`Network error while trying to ${action} environment.`);
+			addToast(`Network error while trying to ${action} environment.`, 'error');
 		} finally {
 			actionLoading[envId] = false;
 		}
+	}
+
+	// Bulk selection helpers
+	function toggleSelection(envId: string) {
+		const next = new Set(selectedIds);
+		if (next.has(envId)) {
+			next.delete(envId);
+		} else {
+			next.add(envId);
+		}
+		selectedIds = next;
+	}
+
+	function toggleSelectAll() {
+		if (allFilteredSelected) {
+			selectedIds = new Set();
+		} else {
+			selectedIds = new Set(filtered.map((e) => e.id));
+		}
+	}
+
+	async function performBulkAction(action: 'start' | 'stop' | 'destroy') {
+		if (selectedIds.size === 0) return;
+
+		if (action === 'destroy' && !confirm(`Delete ${selectedIds.size} environment(s)? This cannot be undone.`)) {
+			return;
+		}
+
+		bulkLoading = true;
+		try {
+			const res = await fetch('/api/environments/bulk', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action, ids: Array.from(selectedIds) })
+			});
+
+			if (res.ok) {
+				const body = await res.json();
+				const results: Array<{ id: string; success: boolean; error?: string }> = body.results;
+				const succeeded = results.filter((r) => r.success).length;
+				const failed = results.filter((r) => !r.success);
+
+				const verb = action === 'destroy' ? 'Deleted' : action === 'start' ? 'Started' : 'Stopped';
+
+				if (succeeded > 0) {
+					addToast(`${verb} ${succeeded} environment${succeeded > 1 ? 's' : ''}.`, 'success');
+				}
+				if (failed.length > 0) {
+					addToast(`${failed.length} failed: ${failed[0].error ?? 'Unknown error'}${failed.length > 1 ? ` (+${failed.length - 1} more)` : ''}`, 'error');
+				}
+
+				// Remove destroyed environments from local state
+				if (action === 'destroy') {
+					const destroyedIds = new Set(results.filter((r) => r.success).map((r) => r.id));
+					environments = environments.filter((e) => !destroyedIds.has(e.id));
+				}
+
+				selectedIds = new Set();
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Bulk action failed.', 'error');
+			}
+		} catch {
+			addToast('Network error during bulk action.', 'error');
+		} finally {
+			bulkLoading = false;
+		}
+	}
+
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes}B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)}MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
 	}
 </script>
 
@@ -117,6 +240,15 @@
 
 	<!-- Filters -->
 	<div class="filters">
+		{#if environments.length > 0}
+			<label class="select-all-check">
+				<input
+					type="checkbox"
+					checked={allFilteredSelected}
+					onchange={toggleSelectAll}
+				/>
+			</label>
+		{/if}
 		<input
 			type="text"
 			class="form-input search-input"
@@ -145,10 +277,32 @@
 	{:else}
 		<div class="env-grid">
 			{#each filtered as env (env.id)}
-				<div class="env-card card">
+				{@const resources = resourceMap.get(env.id)}
+				{@const health = healthMap.get(env.id)}
+				<div class="env-card card" class:selected={selectedIds.has(env.id)}>
+					<!-- Checkbox -->
+					<label
+						class="env-checkbox"
+						class:visible={selectedIds.size > 0 || selectedIds.has(env.id)}
+					>
+						<input
+							type="checkbox"
+							checked={selectedIds.has(env.id)}
+							onchange={() => toggleSelection(env.id)}
+						/>
+					</label>
+
 					<div class="env-card-header">
 						<h3 class="env-name">{env.name}</h3>
-						<span class="badge badge-{env.status}">{env.status}</span>
+						<div class="status-group">
+							{#if health}
+								<span
+									class="health-dot health-{health.state}"
+									title="{health.state}{health.responseMs != null ? ` (${health.responseMs}ms)` : ''}"
+								></span>
+							{/if}
+							<span class="badge badge-{env.status}">{env.status}</span>
+						</div>
 					</div>
 
 					<div class="env-card-details">
@@ -184,6 +338,33 @@
 							<span class="detail-value">{env.node}</span>
 						</div>
 					</div>
+
+					<!-- Resource bars for running environments -->
+					{#if resources}
+						<div class="env-resources">
+							<ResourceBar
+								label="CPU"
+								value={resources.cpuPercent}
+								max={100}
+								warnAt={80}
+								critAt={90}
+							/>
+							<ResourceBar
+								label="Mem"
+								value={resources.memUsed}
+								max={resources.memTotal}
+								warnAt={80}
+								critAt={95}
+							/>
+							<ResourceBar
+								label="Disk"
+								value={resources.diskUsed}
+								max={resources.diskTotal}
+								warnAt={80}
+								critAt={90}
+							/>
+						</div>
+					{/if}
 
 					<div class="env-card-actions">
 						{#if env.status === 'running'}
@@ -238,6 +419,42 @@
 	{/if}
 </div>
 
+<!-- Bulk action bar -->
+{#if selectedIds.size > 0}
+	<div class="bulk-bar">
+		<span class="bulk-count">{selectedIds.size} selected</span>
+		<div class="bulk-actions">
+			<button
+				class="btn btn-secondary btn-sm"
+				disabled={bulkLoading}
+				onclick={() => performBulkAction('start')}
+			>
+				{bulkLoading ? 'Working...' : 'Start'}
+			</button>
+			<button
+				class="btn btn-secondary btn-sm"
+				disabled={bulkLoading}
+				onclick={() => performBulkAction('stop')}
+			>
+				{bulkLoading ? 'Working...' : 'Stop'}
+			</button>
+			<button
+				class="btn btn-danger btn-sm"
+				disabled={bulkLoading}
+				onclick={() => performBulkAction('destroy')}
+			>
+				{bulkLoading ? 'Working...' : 'Delete'}
+			</button>
+		</div>
+		<button
+			class="bulk-clear"
+			onclick={() => { selectedIds = new Set(); }}
+		>
+			Clear
+		</button>
+	</div>
+{/if}
+
 <style>
 	.environments-page {
 		max-width: 1100px;
@@ -274,6 +491,20 @@
 		gap: 12px;
 		margin-bottom: 20px;
 		flex-wrap: wrap;
+		align-items: center;
+	}
+
+	.select-all-check {
+		display: flex;
+		align-items: center;
+		cursor: pointer;
+	}
+
+	.select-all-check input {
+		width: 16px;
+		height: 16px;
+		cursor: pointer;
+		accent-color: var(--accent);
 	}
 
 	.search-input {
@@ -299,6 +530,33 @@
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
+		position: relative;
+	}
+
+	.env-card.selected {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent);
+	}
+
+	.env-checkbox {
+		position: absolute;
+		top: 12px;
+		left: -4px;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity var(--transition);
+	}
+
+	.env-checkbox.visible,
+	.env-card:hover .env-checkbox {
+		opacity: 1;
+	}
+
+	.env-checkbox input {
+		width: 14px;
+		height: 14px;
+		cursor: pointer;
+		accent-color: var(--accent);
 	}
 
 	.env-card-header {
@@ -306,6 +564,34 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 8px;
+	}
+
+	.status-group {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.health-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.health-healthy {
+		background-color: var(--success);
+		box-shadow: 0 0 4px rgba(34, 197, 94, 0.5);
+	}
+
+	.health-degraded {
+		background-color: var(--warning);
+		box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
+	}
+
+	.health-unreachable {
+		background-color: var(--error);
+		box-shadow: 0 0 4px rgba(239, 68, 68, 0.5);
 	}
 
 	.env-name {
@@ -365,6 +651,15 @@
 		background-color: rgba(99, 102, 241, 0.2);
 	}
 
+	/* ---- Resources ---- */
+
+	.env-resources {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding-top: 4px;
+	}
+
 	.env-card-actions {
 		display: flex;
 		gap: 8px;
@@ -383,5 +678,64 @@
 		padding: 48px 24px;
 		text-align: center;
 		color: var(--text-secondary);
+	}
+
+	/* ---- Bulk action bar ---- */
+
+	.bulk-bar {
+		position: fixed;
+		bottom: 24px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 16px;
+		background-color: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+		z-index: 50;
+		animation: slideUp 0.2s ease;
+	}
+
+	.bulk-count {
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
+	.bulk-actions {
+		display: flex;
+		gap: 6px;
+	}
+
+	.bulk-clear {
+		padding: 4px 10px;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: color var(--transition), background-color var(--transition);
+	}
+
+	.bulk-clear:hover {
+		color: var(--text-primary);
+		background-color: rgba(255, 255, 255, 0.06);
+	}
+
+	@keyframes slideUp {
+		from {
+			opacity: 0;
+			transform: translateX(-50%) translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateX(-50%) translateY(0);
+		}
 	}
 </style>

@@ -1,7 +1,35 @@
 <script lang="ts">
+	import { onMount, onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 	import type { Environment } from '$lib/types/environment';
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
+	import ResourceBar from '$lib/components/ResourceBar.svelte';
+	import { addToast } from '$lib/stores/toast.svelte';
+
+	interface ResourceMetrics {
+		cpuPercent: number;
+		memUsed: number;
+		memTotal: number;
+		diskUsed: number;
+		diskTotal: number;
+		netIn: number;
+		netOut: number;
+		uptime: number;
+	}
+
+	interface HealthStatus {
+		state: 'healthy' | 'degraded' | 'unreachable';
+		responseMs: number | null;
+		lastChecked: string;
+	}
+
+	interface EnvironmentLiveData {
+		id: string;
+		status: string;
+		ipAddress: string | null;
+		resources: ResourceMetrics | null;
+		health: HealthStatus | null;
+	}
 
 	let { data }: { data: PageData } = $props();
 
@@ -11,6 +39,9 @@
 	let showPassword = $state(false);
 	let copied = $state('');
 
+	let resources = $state<ResourceMetrics | null>(null);
+	let health = $state<HealthStatus | null>(null);
+
 	const rootPassword = $derived(
 		metadata?.root_password ? String(metadata.root_password) : null
 	);
@@ -19,13 +50,47 @@
 		metadata?.community_script as { name?: string; interface_port?: number; slug?: string } | null
 	);
 
+	// SSE connection
+	let eventSource: EventSource | null = null;
+
+	function connectSSE() {
+		eventSource = new EventSource('/api/environments/stream');
+		eventSource.onmessage = (event) => {
+			try {
+				const liveData: EnvironmentLiveData[] = JSON.parse(event.data);
+				const mine = liveData.find((d) => d.id === env.id);
+				if (mine) {
+					if (mine.status && env.status !== mine.status) {
+						env.status = mine.status as Environment['status'];
+					}
+					if (mine.ipAddress && !env.ip_address) {
+						env.ip_address = mine.ipAddress;
+					}
+					resources = mine.resources;
+					health = mine.health;
+				}
+			} catch {
+				// ignore
+			}
+		};
+	}
+
+	onMount(() => {
+		connectSSE();
+	});
+
+	onDestroy(() => {
+		eventSource?.close();
+		eventSource = null;
+	});
+
 	async function performAction(action: 'start' | 'stop') {
 		actionLoading = true;
 		try {
 			const res = await fetch(`/api/environments/${env.id}/${action}`, { method: 'POST' });
 			if (!res.ok) {
 				const body = await res.json().catch(() => ({}));
-				alert(body.message ?? `Failed to ${action} environment.`);
+				addToast(body.message ?? `Failed to ${action} environment.`, 'error');
 				return;
 			}
 			// Refresh environment data
@@ -38,7 +103,7 @@
 				}
 			}
 		} catch {
-			alert(`Network error while trying to ${action} environment.`);
+			addToast(`Network error while trying to ${action} environment.`, 'error');
 		} finally {
 			actionLoading = false;
 		}
@@ -48,6 +113,22 @@
 		navigator.clipboard.writeText(text);
 		copied = label;
 		setTimeout(() => { copied = ''; }, 2000);
+	}
+
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes}B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)}MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+	}
+
+	function formatUptime(seconds: number): string {
+		const days = Math.floor(seconds / 86400);
+		const hours = Math.floor((seconds % 86400) / 3600);
+		const mins = Math.floor((seconds % 3600) / 60);
+		if (days > 0) return `${days}d ${hours}h`;
+		if (hours > 0) return `${hours}h ${mins}m`;
+		return `${mins}m`;
 	}
 </script>
 
@@ -62,6 +143,12 @@
 				Back
 			</a>
 			<h1 class="env-title">{env.name}</h1>
+			{#if health}
+				<span
+					class="health-dot health-{health.state}"
+					title="{health.state}{health.responseMs != null ? ` (${health.responseMs}ms)` : ''}"
+				></span>
+			{/if}
 			<span class="badge badge-{env.status}">{env.status}</span>
 		</div>
 		<div class="header-actions">
@@ -154,6 +241,24 @@
 				</div>
 			{/if}
 		</div>
+
+		<!-- Resource metrics -->
+		{#if resources}
+			<div class="resource-section">
+				<div class="resource-bars">
+					<ResourceBar label="CPU" value={resources.cpuPercent} max={100} warnAt={80} critAt={90} />
+					<ResourceBar label="Memory" value={resources.memUsed} max={resources.memTotal} warnAt={80} critAt={95} />
+					<ResourceBar label="Disk" value={resources.diskUsed} max={resources.diskTotal} warnAt={80} critAt={90} />
+				</div>
+				<div class="resource-stats">
+					<span class="stat">Mem: {formatBytes(resources.memUsed)}/{formatBytes(resources.memTotal)}</span>
+					<span class="stat">Disk: {formatBytes(resources.diskUsed)}/{formatBytes(resources.diskTotal)}</span>
+					<span class="stat">Net In: {formatBytes(resources.netIn)}</span>
+					<span class="stat">Net Out: {formatBytes(resources.netOut)}</span>
+					<span class="stat">Uptime: {formatUptime(resources.uptime)}</span>
+				</div>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Terminal -->
@@ -247,6 +352,28 @@
 		gap: 8px;
 	}
 
+	.health-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.health-healthy {
+		background-color: var(--success);
+		box-shadow: 0 0 4px rgba(34, 197, 94, 0.5);
+	}
+
+	.health-degraded {
+		background-color: var(--warning);
+		box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
+	}
+
+	.health-unreachable {
+		background-color: var(--error);
+		box-shadow: 0 0 4px rgba(239, 68, 68, 0.5);
+	}
+
 	/* ---- Info bar ---- */
 
 	.info-bar {
@@ -326,6 +453,35 @@
 
 	.port-link:hover {
 		background-color: rgba(99, 102, 241, 0.2);
+	}
+
+	/* ---- Resource section ---- */
+
+	.resource-section {
+		margin-top: 14px;
+		padding-top: 14px;
+		border-top: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.resource-bars {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 12px;
+	}
+
+	.resource-stats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px 16px;
+	}
+
+	.stat {
+		font-size: 0.6875rem;
+		color: var(--text-secondary);
+		font-family: 'SF Mono', 'Fira Code', monospace;
 	}
 
 	/* ---- Terminal section ---- */

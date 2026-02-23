@@ -4,6 +4,8 @@
 	import TerminalToolbar from './TerminalToolbar.svelte';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import SnapshotModal from './SnapshotModal.svelte';
+	import FileDownloadModal from './FileDownloadModal.svelte';
+	import { addToast } from '$lib/stores/toast.svelte';
 
 	interface Props {
 		envId: string;
@@ -31,8 +33,49 @@
 	let snapshotContent = $state('');
 	let snapshotOpen = $state(false);
 
+	// Font size
+	let fontSize = $state(14);
+
+	// Bell notification
+	let bellTabs = $state<Set<string>>(new Set());
+
+	// Recording
+	let recording = $state(false);
+	let recordingStartTime = $state(0);
+	let recordingEvents = $state<[number, string, string][]>([]);
+	const MAX_RECORDING_MS = 30 * 60 * 1000;
+	const MAX_RECORDING_BYTES = 50 * 1024 * 1024;
+	let recordingBytes = $state(0);
+
+	// File transfer
+	let downloadModalOpen = $state(false);
+	let fileInputEl: HTMLInputElement;
+
 	// Terminal component refs keyed by tab ID
 	let terminalRefs = $state<Record<string, Terminal>>({});
+
+	// Load font size from localStorage
+	function loadFontSize(): void {
+		try {
+			const stored = localStorage.getItem('spyre-terminal-font-size');
+			if (stored) {
+				const parsed = parseInt(stored, 10);
+				if (parsed >= 8 && parsed <= 24) {
+					fontSize = parsed;
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	function saveFontSize(): void {
+		try {
+			localStorage.setItem('spyre-terminal-font-size', String(fontSize));
+		} catch {
+			// ignore
+		}
+	}
 
 	function getActiveTab(): Tab | undefined {
 		return tabs.find(t => t.id === activeTabId);
@@ -284,28 +327,225 @@
 		if (terminal) terminal.focusTerminal();
 	}
 
-	// Global keyboard shortcut for search
+	// Font size
+	function handleFontSizeUp() {
+		if (fontSize < 24) {
+			fontSize += 1;
+			saveFontSize();
+		}
+	}
+
+	function handleFontSizeDown() {
+		if (fontSize > 8) {
+			fontSize -= 1;
+			saveFontSize();
+		}
+	}
+
+	function handleFontSizeReset() {
+		fontSize = 14;
+		saveFontSize();
+	}
+
+	// Bell notification
+	function handleBell(tabId: string) {
+		// Only badge if tab is not active or page is hidden
+		if (tabId !== activeTabId || document.hidden) {
+			const next = new Set(bellTabs);
+			next.add(tabId);
+			bellTabs = next;
+		}
+
+		// Browser notification if page is hidden
+		if (document.hidden && Notification.permission === 'granted') {
+			new Notification('Terminal Bell', {
+				body: 'A terminal tab rang the bell.',
+				tag: 'spyre-bell'
+			});
+		}
+
+		if (document.hidden) {
+			addToast('Terminal bell rang', 'info', 3000);
+		}
+	}
+
+	function clearBell(tabId: string) {
+		if (bellTabs.has(tabId)) {
+			const next = new Set(bellTabs);
+			next.delete(tabId);
+			bellTabs = next;
+		}
+	}
+
+	// Recording
+	function handleRecordToggle() {
+		if (recording) {
+			stopRecording();
+		} else {
+			startRecording();
+		}
+	}
+
+	function startRecording() {
+		const terminal = getActiveTerminal();
+		if (!terminal) return;
+
+		recordingStartTime = performance.now();
+		recordingEvents = [];
+		recordingBytes = 0;
+		recording = true;
+		addToast('Recording started', 'info', 2000);
+	}
+
+	function stopRecording() {
+		recording = false;
+
+		if (recordingEvents.length === 0) {
+			addToast('No data recorded', 'warning');
+			return;
+		}
+
+		// Build asciicast v2 file
+		const header = JSON.stringify({
+			version: 2,
+			width: 80,
+			height: 24,
+			timestamp: Math.floor(recordingStartTime / 1000)
+		});
+
+		const lines = [header];
+		for (const evt of recordingEvents) {
+			lines.push(JSON.stringify(evt));
+		}
+
+		const content = lines.join('\n') + '\n';
+		const blob = new Blob([content], { type: 'text/plain' });
+
+		// Trigger download
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `recording-${new Date().toISOString().replace(/[:.]/g, '-')}.cast`;
+		a.click();
+		URL.revokeObjectURL(url);
+
+		recordingEvents = [];
+		recordingBytes = 0;
+		addToast('Recording saved', 'success');
+	}
+
+	function handleRecordData(timestamp: number, data: string) {
+		if (!recording) return;
+
+		const elapsed = (timestamp - recordingStartTime) / 1000;
+		recordingBytes += data.length;
+
+		// Auto-stop at limits
+		if (elapsed * 1000 > MAX_RECORDING_MS || recordingBytes > MAX_RECORDING_BYTES) {
+			addToast('Recording auto-stopped (limit reached)', 'warning');
+			stopRecording();
+			return;
+		}
+
+		recordingEvents.push([elapsed, 'o', data]);
+	}
+
+	// File upload
+	function handleUploadClick() {
+		fileInputEl?.click();
+	}
+
+	async function handleFileSelected(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const files = input.files;
+		if (!files || files.length === 0) return;
+		await uploadFiles(files);
+		input.value = '';
+	}
+
+	async function handleFileDrop(files: FileList) {
+		await uploadFiles(files);
+	}
+
+	async function uploadFiles(files: FileList) {
+		for (const file of Array.from(files)) {
+			const destPath = `/tmp/${file.name}`;
+			const formData = new FormData();
+			formData.append('file', file);
+			formData.append('path', destPath);
+
+			try {
+				const res = await fetch(`/api/terminal/${envId}/upload`, {
+					method: 'POST',
+					body: formData
+				});
+
+				if (res.ok) {
+					const result = await res.json();
+					addToast(`Uploaded ${file.name} to ${result.path}`, 'success');
+				} else {
+					const body = await res.json().catch(() => ({}));
+					addToast(body.message ?? `Failed to upload ${file.name}`, 'error');
+				}
+			} catch {
+				addToast(`Network error uploading ${file.name}`, 'error');
+			}
+		}
+	}
+
+	// Global keyboard shortcut for search and font size
 	function handleGlobalKeydown(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && e.key === 'F') {
 			e.preventDefault();
 			handleSearchToggle();
 		}
+
+		if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
+			e.preventDefault();
+			handleFontSizeUp();
+		}
+
+		if (e.ctrlKey && e.key === '-') {
+			e.preventDefault();
+			handleFontSizeDown();
+		}
+
+		if (e.ctrlKey && e.key === '0') {
+			e.preventDefault();
+			handleFontSizeReset();
+		}
 	}
 
 	// Reset broadcast when switching tabs
 	$effect(() => {
-		// When active tab changes, reset broadcast state
+		// When active tab changes, reset broadcast state and clear bell
 		if (activeTabId) {
 			broadcastActive = false;
+			clearBell(activeTabId);
 		}
 	});
 
 	onMount(() => {
+		loadFontSize();
 		loadWindows();
+
+		// Request notification permission
+		if ('Notification' in window && Notification.permission === 'default') {
+			Notification.requestPermission();
+		}
 	});
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
+
+<!-- Hidden file input for upload -->
+<input
+	type="file"
+	class="hidden-input"
+	bind:this={fileInputEl}
+	onchange={handleFileSelected}
+	multiple
+/>
 
 <div class="terminal-tabs">
 	<div class="tab-bar">
@@ -314,11 +554,11 @@
 			<div
 				class="tab"
 				class:active={tab.id === activeTabId}
-				onclick={() => (activeTabId = tab.id)}
+				onclick={() => { activeTabId = tab.id; clearBell(tab.id); }}
 				ondblclick={() => startRename(tab)}
 				role="tab"
 				tabindex="0"
-				onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') activeTabId = tab.id; }}
+				onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { activeTabId = tab.id; clearBell(tab.id); } }}
 			>
 				{#if tab.id === activeTabId && editingTabId !== tab.id}
 					{#if i > 0}
@@ -347,6 +587,10 @@
 					/>
 				{:else}
 					<span class="tab-name">{tab.name}</span>
+				{/if}
+
+				{#if bellTabs.has(tab.id)}
+					<span class="bell-dot"></span>
 				{/if}
 
 				{#if tab.id === activeTabId && editingTabId !== tab.id}
@@ -405,6 +649,8 @@
 	<TerminalToolbar
 		{sessionRestored}
 		{broadcastActive}
+		{fontSize}
+		{recording}
 		onsplith={handleSplitH}
 		onsplitv={handleSplitV}
 		onzoom={handleZoom}
@@ -412,6 +658,11 @@
 		onsnapshot={takeSnapshot}
 		onbroadcast={toggleBroadcast}
 		oncommand={handleCommand}
+		onfontsizeup={handleFontSizeUp}
+		onfontsizedown={handleFontSizeDown}
+		onrecord={handleRecordToggle}
+		onupload={handleUploadClick}
+		ondownload={() => { downloadModalOpen = true; }}
 	/>
 
 	<div class="tab-content">
@@ -435,6 +686,8 @@
 				<Terminal
 					bind:this={terminalRefs[tab.id]}
 					{envId}
+					{fontSize}
+					{recording}
 					windowIndex={tab.windowIndex}
 					active={tab.id === activeTabId}
 					onconnected={(idx, restored) => {
@@ -442,6 +695,9 @@
 						if (t) t.windowIndex = idx;
 						if (restored) sessionRestored = true;
 					}}
+					onbell={() => handleBell(tab.id)}
+					onrecorddata={handleRecordData}
+					onfiledrop={handleFileDrop}
 				/>
 			{/each}
 		{/if}
@@ -455,7 +711,18 @@
 	/>
 {/if}
 
+{#if downloadModalOpen}
+	<FileDownloadModal
+		{envId}
+		onclose={() => { downloadModalOpen = false; }}
+	/>
+{/if}
+
 <style>
+	.hidden-input {
+		display: none;
+	}
+
 	.terminal-tabs {
 		display: flex;
 		flex-direction: column;
@@ -522,6 +789,15 @@
 		border: 1px solid var(--accent);
 		border-radius: 2px;
 		outline: none;
+	}
+
+	.bell-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background-color: var(--warning);
+		flex-shrink: 0;
 	}
 
 	.reorder-btn {

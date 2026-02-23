@@ -5,18 +5,28 @@
 		envId: string;
 		windowIndex?: number;
 		active?: boolean;
+		fontSize?: number;
+		recording?: boolean;
 		onconnected?: (windowIndex: number, sessionRestored: boolean) => void;
 		ondisconnected?: (reason: string) => void;
 		onerror?: (message: string) => void;
+		onbell?: () => void;
+		onrecorddata?: (timestamp: number, data: string) => void;
+		onfiledrop?: (files: FileList) => void;
 	}
 
 	let {
 		envId,
 		windowIndex = 0,
 		active = true,
+		fontSize = 14,
+		recording = false,
 		onconnected,
 		ondisconnected,
-		onerror
+		onerror,
+		onbell,
+		onrecorddata,
+		onfiledrop
 	}: Props = $props();
 
 	export function sendKeys(data: string): void {
@@ -39,6 +49,7 @@
 	let disconnected = $state(false);
 	let connecting = $state(true);
 	let errorMsg = $state('');
+	let dragOver = $state(false);
 
 	async function initTerminal() {
 		const { Terminal } = await import('@xterm/xterm');
@@ -47,7 +58,7 @@
 
 		term = new Terminal({
 			cursorBlink: true,
-			fontSize: 14,
+			fontSize,
 			fontFamily: "'SF Mono', 'Fira Code', 'Fira Mono', 'Cascadia Code', Menlo, monospace",
 			theme: {
 				background: '#0f1117',
@@ -89,6 +100,9 @@
 
 		term.open(containerEl);
 		fitAddon.fit();
+
+		// Bell handler
+		term.onBell(() => onbell?.());
 
 		// Handle terminal input → WebSocket
 		term.onData((data: string) => {
@@ -139,7 +153,14 @@
 		ws.onmessage = (event: MessageEvent) => {
 			if (event.data instanceof ArrayBuffer) {
 				// Binary terminal output
-				term?.write(new Uint8Array(event.data));
+				const data = new Uint8Array(event.data);
+				term?.write(data);
+
+				// Recording: capture binary output
+				if (recording && onrecorddata) {
+					const text = new TextDecoder().decode(data);
+					onrecorddata(performance.now(), text);
+				}
 			} else if (typeof event.data === 'string') {
 				// JSON control message
 				try {
@@ -164,6 +185,11 @@
 				} catch {
 					// Plain text data from server
 					term?.write(event.data);
+
+					// Recording: capture text output
+					if (recording && onrecorddata) {
+						onrecorddata(performance.now(), event.data);
+					}
 				}
 			}
 		};
@@ -215,10 +241,56 @@
 			setTimeout(() => fitAddon?.fit(), 50);
 		}
 	});
+
+	// Font size changes
+	$effect(() => {
+		if (term && fontSize) {
+			term.options.fontSize = fontSize;
+			fitAddon?.fit();
+		}
+	});
+
+	// Drag and drop handlers
+	function handleDragOver(e: DragEvent) {
+		e.preventDefault();
+		dragOver = true;
+	}
+
+	function handleDragLeave() {
+		dragOver = false;
+	}
+
+	function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		dragOver = false;
+		if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+			onfiledrop?.(e.dataTransfer.files);
+		}
+	}
 </script>
 
-<div class="terminal-wrapper" class:inactive={!active}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="terminal-wrapper"
+	class:inactive={!active}
+	ondragover={handleDragOver}
+	ondragleave={handleDragLeave}
+	ondrop={handleDrop}
+>
 	<div class="terminal-container" bind:this={containerEl}></div>
+
+	{#if dragOver}
+		<div class="drop-overlay">
+			<div class="drop-content">
+				<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+					<polyline points="17 8 12 3 7 8" />
+					<line x1="12" y1="3" x2="12" y2="15" />
+				</svg>
+				<span>Drop to upload</span>
+			</div>
+		</div>
+	{/if}
 
 	{#if connecting}
 		<div class="terminal-overlay">
@@ -278,6 +350,28 @@
 	.terminal-container :global(.xterm) {
 		padding: 8px;
 		height: 100%;
+	}
+
+	.drop-overlay {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background-color: rgba(99, 102, 241, 0.15);
+		border: 2px dashed var(--accent);
+		border-radius: var(--radius-sm);
+		z-index: 15;
+	}
+
+	.drop-content {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+		color: var(--accent);
+		font-size: 0.875rem;
+		font-weight: 600;
 	}
 
 	.terminal-overlay {
