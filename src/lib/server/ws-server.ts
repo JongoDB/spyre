@@ -8,25 +8,16 @@ export function createTerminalWsServer(httpServer: HttpServer): WebSocketServer 
 
   httpServer.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = req.url;
-    if (!url) {
-      socket.destroy();
-      return;
-    }
+    if (!url) return;
 
-    // Match /api/terminal/{envId}
+    // Match /api/terminal/{envId} — ignore everything else (including Vite HMR)
     const match = url.match(/^\/api\/terminal\/([^/?]+)/);
-    if (!match) {
-      socket.destroy();
-      return;
-    }
+    if (!match) return;
 
     const envId = match[1];
 
     // Don't handle the windows API path
-    if (url.includes('/windows')) {
-      socket.destroy();
-      return;
-    }
+    if (url.includes('/windows')) return;
 
     // Parse query parameters
     const queryStart = url.indexOf('?');

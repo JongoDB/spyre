@@ -203,10 +203,10 @@ const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
   const url = req.url;
-  if (!url) { socket.destroy(); return; }
+  if (!url) return;
 
   const match = url.match(/^\/api\/terminal\/([^/?]+)/);
-  if (!match || url.includes('/windows')) { socket.destroy(); return; }
+  if (!match || url.includes('/windows')) return;
 
   const envId = match[1];
   const queryStart = url.indexOf('?');
