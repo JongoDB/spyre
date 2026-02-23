@@ -182,11 +182,16 @@
 					<span class="info-value">
 						<code>{env.ip_address}</code>
 						<button class="copy-btn" onclick={() => copyToClipboard(env.ip_address!, 'ip')} title="Copy IP">
-							{copied === 'ip' ? '&#10003;' : '&#128203;'}
+							{#if copied === 'ip'}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+							{:else}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+							{/if}
 						</button>
 					</span>
 				</div>
 			{/if}
+			<div class="info-divider"></div>
 			<div class="info-item">
 				<span class="info-label">Type</span>
 				<span class="info-value">{env.type?.toUpperCase() ?? 'N/A'}</span>
@@ -202,12 +207,17 @@
 				<span class="info-value">{env.node}</span>
 			</div>
 			{#if env.ip_address}
+				<div class="info-divider"></div>
 				<div class="info-item">
 					<span class="info-label">SSH</span>
 					<span class="info-value">
 						<code>{env.ssh_user}@{env.ip_address}</code>
 						<button class="copy-btn" onclick={() => copyToClipboard(`ssh ${env.ssh_user}@${env.ip_address}`, 'ssh')} title="Copy SSH command">
-							{copied === 'ssh' ? '&#10003;' : '&#128203;'}
+							{#if copied === 'ssh'}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+							{:else}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+							{/if}
 						</button>
 					</span>
 				</div>
@@ -221,16 +231,25 @@
 						{:else}
 							<code class="masked">{'*'.repeat(12)}</code>
 						{/if}
-						<button class="copy-btn" onclick={() => { showPassword = !showPassword; }} title="Toggle password visibility">
-							{showPassword ? '&#128065;' : '&#128064;'}
+						<button class="copy-btn" onclick={() => { showPassword = !showPassword; }} title={showPassword ? 'Hide password' : 'Show password'}>
+							{#if showPassword}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+							{:else}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+							{/if}
 						</button>
 						<button class="copy-btn" onclick={() => copyToClipboard(rootPassword, 'pw')} title="Copy password">
-							{copied === 'pw' ? '&#10003;' : '&#128203;'}
+							{#if copied === 'pw'}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+							{:else}
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+							{/if}
 						</button>
 					</span>
 				</div>
 			{/if}
 			{#if communityScript?.interface_port && env.ip_address}
+				<div class="info-divider"></div>
 				<div class="info-item">
 					<span class="info-label">Web UI</span>
 					<span class="info-value">
@@ -384,20 +403,31 @@
 
 	.info-items {
 		display: flex;
+		align-items: center;
 		flex-wrap: wrap;
-		gap: 12px 24px;
+		gap: 10px 20px;
+	}
+
+	.info-divider {
+		width: 1px;
+		height: 20px;
+		background-color: var(--border);
+		flex-shrink: 0;
 	}
 
 	.info-item {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 8px;
 		font-size: 0.8125rem;
 	}
 
 	.info-label {
 		color: var(--text-secondary);
 		font-weight: 500;
+		font-size: 0.6875rem;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
 	}
 
 	.info-value {
