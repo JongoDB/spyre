@@ -159,6 +159,11 @@ export interface Template {
 
   // Community
   community_script_slug: string | null;
+  install_method_type: string | null;
+  interface_port: number | null;
+  default_credentials: string | null;
+  post_install_notes: string | null;
+  privileged: number;
 
   // Display
   installed_software: string | null;
@@ -213,6 +218,11 @@ export interface TemplateInput {
   timezone?: string;
 
   community_script_slug?: string;
+  install_method_type?: string;
+  interface_port?: number;
+  default_credentials?: { username: string | null; password: string | null };
+  post_install_notes?: Array<{ text: string; type?: string }>;
+  privileged?: boolean;
 
   installed_software?: string[];
   custom_script?: string;
@@ -267,6 +277,11 @@ export interface ResolvedTemplate {
 
   // Community
   community_script_slug: string | null;
+  install_method_type: string | null;
+  interface_port: number | null;
+  default_credentials: { username: string | null; password: string | null } | null;
+  post_install_notes: Array<{ text: string; type?: string }>;
+  privileged: boolean;
 
   // Software
   software_pools: SoftwarePoolWithItems[];

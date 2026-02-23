@@ -45,6 +45,7 @@
 	let selectedScript = $derived(
 		data.communityScripts.find(s => s.slug === selectedScriptSlug)
 	);
+	let selectedInstallMethod = $state('default');
 
 	let communityIsValid = $derived(
 		name.trim().length > 0 && selectedScriptSlug.length > 0
@@ -84,7 +85,12 @@
 					nesting: resolved.nesting,
 					ssh_enabled: resolved.ssh_enabled,
 					password: resolved.root_password || undefined,
-					template_id: selectedTemplateId
+					template_id: selectedTemplateId,
+					// Provisioner pipeline fields
+					default_user: resolved.default_user || undefined,
+					community_script_slug: resolved.community_script_slug || undefined,
+					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
+					custom_script: resolved.custom_script || undefined
 				})
 			});
 
@@ -150,45 +156,26 @@
 		errorMessage = '';
 
 		try {
-			// Import the script as a template first
-			const importRes = await fetch(`/api/community-scripts/${selectedScriptSlug}/import`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: `${name.trim()}-template` })
-			});
-
-			if (!importRes.ok) {
-				const body = await importRes.json().catch(() => ({}));
-				errorMessage = body.message ?? 'Failed to import community script.';
-				return;
-			}
-
-			const importedTemplate = await importRes.json();
-
-			// Resolve and create environment from the imported template
-			const resolveRes = await fetch(`/api/templates/${importedTemplate.id}/resolve`);
-			if (!resolveRes.ok) {
-				errorMessage = 'Failed to resolve imported template.';
-				return;
-			}
-
-			const resolved = await resolveRes.json();
+			const script = selectedScript!;
+			const method = script.install_methods.find(
+				(m: { type: string }) => m.type === selectedInstallMethod
+			) ?? script.install_methods[0];
 
 			const res = await fetch('/api/environments', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					name: name.trim(),
-					type: resolved.type || 'lxc',
-					template: resolved.os_template || data.templates[0]?.volid || '',
-					cores: resolved.cores || 1,
-					memory: resolved.memory || 512,
-					disk: resolved.disk || 8,
-					nameserver: resolved.dns || '8.8.8.8',
-					unprivileged: resolved.unprivileged ?? true,
-					nesting: resolved.nesting ?? true,
-					ssh_enabled: resolved.ssh_enabled ?? true,
-					template_id: importedTemplate.id
+					type: script.type === 'vm' ? 'vm' : 'lxc',
+					template: '',
+					cores: method?.resources?.cpu ?? script.default_cpu ?? 1,
+					memory: method?.resources?.ram ?? script.default_ram ?? 512,
+					disk: method?.resources?.hdd ?? script.default_disk ?? 8,
+					community_script_slug: script.slug,
+					install_method_type: method?.type ?? 'default',
+					unprivileged: true,
+					nesting: true,
+					ssh_enabled: true,
 				})
 			});
 
@@ -535,7 +522,7 @@
 							<div class="script-header">
 								<span class="script-name">{script.name}</span>
 								{#if script.type}
-									<span class="type-badge" class:vm={script.type === 'vm'}>{script.type.toUpperCase()}</span>
+									<span class="type-badge" class:vm={script.type === 'vm'}>{script.type === 'ct' ? 'LXC' : script.type.toUpperCase()}</span>
 								{/if}
 							</div>
 							{#if script.description}
@@ -576,6 +563,33 @@
 							required
 						/>
 					</div>
+
+					{#if selectedScript.install_methods.length > 1}
+						<div class="form-group">
+							<label class="form-label">Install Method</label>
+							<div class="method-options">
+								{#each selectedScript.install_methods as method}
+									<label class="method-option">
+										<input type="radio" value={method.type} bind:group={selectedInstallMethod} />
+										<span class="method-label">
+											{method.type} — {method.resources.os} {method.resources.version},
+											{method.resources.cpu} CPU, {method.resources.ram} MB, {method.resources.hdd} GB
+										</span>
+									</label>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					{#if selectedScript.notes?.length}
+						<div class="notes-panel">
+							{#each selectedScript.notes as note}
+								<p class="note {typeof note === 'object' && note.type ? note.type : 'info'}">
+									{typeof note === 'string' ? note : note.text}
+								</p>
+							{/each}
+						</div>
+					{/if}
 
 					<div class="form-actions">
 						<button type="button" class="btn btn-secondary" onclick={() => selectedScriptSlug = ''}>Cancel</button>
@@ -983,5 +997,64 @@
 
 	@keyframes spin {
 		to { transform: rotate(360deg); }
+	}
+
+	/* ---- Install method selector ---- */
+
+	.method-options {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.method-option {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 0.8125rem;
+		cursor: pointer;
+		padding: 8px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		transition: all var(--transition);
+	}
+
+	.method-option:hover {
+		border-color: var(--accent);
+	}
+
+	.method-option input[type='radio'] {
+		accent-color: var(--accent);
+	}
+
+	.method-label {
+		color: var(--text-primary);
+	}
+
+	/* ---- Notes panel ---- */
+
+	.notes-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 12px 16px;
+		background-color: rgba(251, 191, 36, 0.06);
+		border: 1px solid rgba(251, 191, 36, 0.15);
+		border-radius: var(--radius-sm);
+	}
+
+	.note {
+		font-size: 0.8125rem;
+		line-height: 1.5;
+		color: var(--text-secondary);
+		margin: 0;
+	}
+
+	.note.warning {
+		color: #fbbf24;
+	}
+
+	.note.info {
+		color: var(--text-secondary);
 	}
 </style>

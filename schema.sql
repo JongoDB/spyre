@@ -287,6 +287,11 @@ CREATE TABLE IF NOT EXISTS templates (
 
     -- Community script reference
     community_script_slug   TEXT,                            -- references community_scripts_cache(slug)
+    install_method_type     TEXT,                            -- 'default', 'alpine', etc.
+    interface_port          INTEGER,                         -- web UI port (e.g. 8123, 3000)
+    default_credentials     TEXT,                            -- JSON: {"username":null,"password":null}
+    post_install_notes      TEXT,                            -- JSON array of {text,type} objects
+    privileged              INTEGER NOT NULL DEFAULT 0,      -- some community scripts need privileged
 
     -- Display / meta
     installed_software      TEXT,                            -- JSON array of software labels for display
@@ -333,6 +338,7 @@ CREATE TABLE IF NOT EXISTS community_scripts_cache (
     default_username TEXT,
     default_password TEXT,
     notes           TEXT,                                    -- JSON array
+    privileged      INTEGER NOT NULL DEFAULT 0,              -- 1 if script needs privileged container
     fetched_at      TEXT NOT NULL DEFAULT (datetime('now')),
     source_hash     TEXT                                     -- hash of source JSON for change detection
 );

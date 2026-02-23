@@ -29,7 +29,8 @@ export interface CommunityScript {
   install_methods: CommunityScriptInstallMethod[];
   default_username: string | null;
   default_password: string | null;
-  notes: string[];
+  notes: Array<{ text: string; type?: string }>;
+  privileged: boolean;
   fetched_at: string;
   source_hash: string | null;
 }

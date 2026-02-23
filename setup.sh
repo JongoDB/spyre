@@ -303,6 +303,13 @@ if ! grep -q "spyre-worker" "$HOME/.ssh/config" 2>/dev/null; then
   cat >> "$HOME/.ssh/config" << EOF
 
 # --- Spyre managed connections ---
+Host pve-host
+    HostName ${PVE_HOST}
+    User root
+    IdentityFile ${SSH_KEY_PATH}
+    StrictHostKeyChecking accept-new
+    ConnectTimeout 10
+
 Host spyre-worker-*
     IdentityFile ${SSH_KEY_PATH}
     StrictHostKeyChecking accept-new
@@ -316,6 +323,41 @@ EOF
   chmod 600 "$HOME/.ssh/config"
 else
   log "Spyre SSH config already present"
+fi
+
+echo ""
+
+# =============================================================================
+# Phase 5b: Copy SSH Key to Proxmox Host
+# =============================================================================
+
+echo -e "${BOLD}── Phase 5b: Proxmox Host SSH Access ──${NC}"
+echo ""
+echo "  Spyre needs SSH access to the Proxmox host for container management"
+echo "  and community script deployment."
+echo ""
+
+ask "Copy SSH key to Proxmox host (root@${PVE_HOST})? [Y/n]: "
+read -r COPY_KEY
+COPY_KEY="${COPY_KEY:-Y}"
+
+if [[ "$COPY_KEY" =~ ^[Yy] ]]; then
+  ssh-copy-id -i "${SSH_KEY_PATH}.pub" -o StrictHostKeyChecking=accept-new \
+    "root@${PVE_HOST}" 2>> "$LOG_FILE"
+  if [ $? -eq 0 ]; then
+    log "SSH key copied. Testing connection..."
+    if ssh -i "${SSH_KEY_PATH}" -o ConnectTimeout=5 "root@${PVE_HOST}" "hostname" >> "$LOG_FILE" 2>&1; then
+      log "SSH to Proxmox host verified."
+    else
+      warn "Key copied but connection test failed. Check firewall."
+    fi
+  else
+    warn "Failed to copy SSH key. Do it manually later:"
+    echo "      ssh-copy-id -i ${SSH_KEY_PATH}.pub root@${PVE_HOST}"
+  fi
+else
+  warn "Skipped. Community scripts won't work without SSH access."
+  echo "      To set up later: ssh-copy-id -i ${SSH_KEY_PATH}.pub root@${PVE_HOST}"
 fi
 
 echo ""
@@ -519,6 +561,7 @@ echo -e "  ${GREEN}✓${NC} System packages installed"
 echo -e "  ${GREEN}✓${NC} Node.js $(node -v) installed"
 echo -e "  ${GREEN}✓${NC} Claude Code installed"
 echo -e "  ${GREEN}✓${NC} SSH keys generated"
+echo -e "  ${GREEN}✓${NC} Proxmox host SSH access configured"
 echo -e "  ${GREEN}✓${NC} Proxmox connectivity $([ "$HTTP_CODE" = "200" ] && echo "verified" || echo "pending")"
 echo -e "  ${GREEN}✓${NC} environment.yaml generated"
 echo -e "  ${GREEN}✓${NC} Secrets stored in /etc/spyre/env"

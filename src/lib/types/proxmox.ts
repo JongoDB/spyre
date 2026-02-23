@@ -29,6 +29,7 @@ export interface ProxmoxLxc {
   netin: number;
   netout: number;
   type: string;
+  tags?: string;
 }
 
 export interface ProxmoxLxcStatus {

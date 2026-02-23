@@ -123,6 +123,11 @@ export function resolveTemplate(id: string): ResolvedTemplate {
 
     // Community
     community_script_slug: t.community_script_slug,
+    install_method_type: t.install_method_type,
+    interface_port: t.interface_port,
+    default_credentials: t.default_credentials ? JSON.parse(t.default_credentials) : null,
+    post_install_notes: t.post_install_notes ? JSON.parse(t.post_install_notes) : [],
+    privileged: !!t.privileged,
 
     // Software pools
     software_pools: t.software_pools,
@@ -154,7 +159,9 @@ export function createTemplate(input: TemplateInput): Template {
       bridge, ip_mode, ip_address, gateway, dns, vlan,
       unprivileged, nesting, features, startup_order, protection,
       ssh_enabled, ssh_keys, root_password, default_user, timezone,
-      community_script_slug, installed_software, custom_script, tags
+      community_script_slug, install_method_type, interface_port,
+      default_credentials, post_install_notes, privileged,
+      installed_software, custom_script, tags
     ) VALUES (
       ?, ?, ?, ?,
       ?, ?,
@@ -163,7 +170,9 @@ export function createTemplate(input: TemplateInput): Template {
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
-      ?, ?, ?, ?
+      ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?
     )
   `);
 
@@ -185,6 +194,11 @@ export function createTemplate(input: TemplateInput): Template {
       input.ssh_enabled !== false ? 1 : 0,
       input.ssh_keys ?? null, input.root_password ?? null, input.default_user ?? null, input.timezone ?? 'host',
       input.community_script_slug ?? null,
+      input.install_method_type ?? null,
+      input.interface_port ?? null,
+      input.default_credentials ? JSON.stringify(input.default_credentials) : null,
+      input.post_install_notes ? JSON.stringify(input.post_install_notes) : null,
+      input.privileged ? 1 : 0,
       input.installed_software ? JSON.stringify(input.installed_software) : null,
       input.custom_script ?? null, input.tags ?? null
     );
@@ -222,7 +236,9 @@ export function updateTemplate(id: string, input: Partial<TemplateInput>): Templ
       bridge = ?, ip_mode = ?, ip_address = ?, gateway = ?, dns = ?, vlan = ?,
       unprivileged = ?, nesting = ?, features = ?, startup_order = ?, protection = ?,
       ssh_enabled = ?, ssh_keys = ?, root_password = ?, default_user = ?, timezone = ?,
-      community_script_slug = ?, installed_software = ?, custom_script = ?, tags = ?,
+      community_script_slug = ?, install_method_type = ?, interface_port = ?,
+      default_credentials = ?, post_install_notes = ?, privileged = ?,
+      installed_software = ?, custom_script = ?, tags = ?,
       updated_at = datetime('now')
     WHERE id = ?
   `).run(
@@ -256,6 +272,15 @@ export function updateTemplate(id: string, input: Partial<TemplateInput>): Templ
     input.default_user !== undefined ? input.default_user ?? null : existing.default_user,
     input.timezone !== undefined ? input.timezone ?? null : existing.timezone,
     input.community_script_slug !== undefined ? input.community_script_slug ?? null : existing.community_script_slug,
+    input.install_method_type !== undefined ? input.install_method_type ?? null : existing.install_method_type,
+    input.interface_port !== undefined ? input.interface_port ?? null : existing.interface_port,
+    input.default_credentials !== undefined
+      ? (input.default_credentials ? JSON.stringify(input.default_credentials) : null)
+      : existing.default_credentials,
+    input.post_install_notes !== undefined
+      ? (input.post_install_notes ? JSON.stringify(input.post_install_notes) : null)
+      : existing.post_install_notes,
+    input.privileged !== undefined ? (input.privileged ? 1 : 0) : existing.privileged,
     input.installed_software !== undefined
       ? (input.installed_software ? JSON.stringify(input.installed_software) : null)
       : existing.installed_software,
@@ -343,6 +368,11 @@ export function duplicateTemplate(id: string, newName?: string): Template {
     default_user: existing.default_user ?? undefined,
     timezone: existing.timezone ?? undefined,
     community_script_slug: existing.community_script_slug ?? undefined,
+    install_method_type: existing.install_method_type ?? undefined,
+    interface_port: existing.interface_port ?? undefined,
+    default_credentials: existing.default_credentials ? JSON.parse(existing.default_credentials) : undefined,
+    post_install_notes: existing.post_install_notes ? JSON.parse(existing.post_install_notes) : undefined,
+    privileged: !!existing.privileged,
     installed_software: existing.installed_software ? JSON.parse(existing.installed_software) : undefined,
     custom_script: existing.custom_script ?? undefined,
     tags: existing.tags ?? undefined,

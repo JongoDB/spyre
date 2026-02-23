@@ -1,13 +1,16 @@
 <script lang="ts">
+	import { onMount, onDestroy } from 'svelte';
 	import type { PageData } from './$types';
+	import type { Environment } from '$lib/types/environment';
 
 	let { data }: { data: PageData } = $props();
 
+	let environments = $state<Environment[]>(data.environments);
 	let search = $state('');
 	let statusFilter = $state('all');
 
 	let filtered = $derived(
-		data.environments.filter((env) => {
+		environments.filter((env) => {
 			const matchesSearch =
 				search === '' ||
 				env.name.toLowerCase().includes(search.toLowerCase());
@@ -19,13 +22,66 @@
 
 	let actionLoading = $state<Record<string, boolean>>({});
 
+	// Poll for status updates every 5 seconds when any environment is provisioning
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	function hasProvisioningEnv(): boolean {
+		return environments.some(e => e.status === 'provisioning' || e.status === 'destroying');
+	}
+
+	async function pollStatuses() {
+		try {
+			const res = await fetch('/api/environments');
+			if (res.ok) {
+				const updated: Environment[] = await res.json();
+				environments = updated;
+			}
+		} catch {
+			// Ignore poll errors
+		}
+	}
+
+	function startPolling() {
+		if (pollTimer) return;
+		pollTimer = setInterval(async () => {
+			await pollStatuses();
+			if (!hasProvisioningEnv()) {
+				stopPolling();
+			}
+		}, 3000);
+	}
+
+	function stopPolling() {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	onMount(() => {
+		if (hasProvisioningEnv()) {
+			startPolling();
+		}
+	});
+
+	onDestroy(() => {
+		stopPolling();
+	});
+
 	async function performAction(envId: string, action: 'start' | 'stop' | 'delete') {
 		actionLoading[envId] = true;
 
 		try {
-			const res = await fetch(`/api/environments/${envId}/${action}`, {
-				method: 'POST'
-			});
+			let res: Response;
+			if (action === 'delete') {
+				res = await fetch(`/api/environments/${envId}`, {
+					method: 'DELETE'
+				});
+			} else {
+				res = await fetch(`/api/environments/${envId}/${action}`, {
+					method: 'POST'
+				});
+			}
 
 			if (!res.ok) {
 				const body = await res.json().catch(() => ({}));
@@ -33,8 +89,8 @@
 				return;
 			}
 
-			// Reload page to reflect new state
-			window.location.reload();
+			// Refresh the list
+			await pollStatuses();
 		} catch {
 			alert(`Network error while trying to ${action} environment.`);
 		} finally {
@@ -101,9 +157,20 @@
 							<span class="detail-value">{env.type}</span>
 						</div>
 						{#if env.ip_address}
+							{@const meta = env.metadata ? JSON.parse(env.metadata) : null}
 							<div class="detail-row">
 								<span class="detail-label">IP</span>
-								<code class="detail-value ip">{env.ip_address}</code>
+								<span class="detail-value ip-row">
+									<code class="ip">{env.ip_address}</code>
+									{#if meta?.community_script?.interface_port}
+										<a href="http://{env.ip_address}:{meta.community_script.interface_port}"
+											target="_blank"
+											rel="noopener noreferrer"
+											class="port-link">
+											:{meta.community_script.interface_port}
+										</a>
+									{/if}
+								</span>
 							</div>
 						{/if}
 						{#if env.vmid}
@@ -137,17 +204,27 @@
 								{actionLoading[env.id] ? 'Stopping...' : 'Stop'}
 							</button>
 						{/if}
-						<button
-							class="btn btn-danger btn-sm"
-							disabled={actionLoading[env.id]}
-							onclick={() => {
-								if (confirm(`Delete environment "${env.name}"?`)) {
-									performAction(env.id, 'delete');
-								}
-							}}
-						>
-							Delete
-						</button>
+						{#if env.status === 'running' || env.status === 'provisioning'}
+							<button
+								class="btn btn-danger btn-sm"
+								disabled
+								title="Stop the environment before deleting"
+							>
+								Delete
+							</button>
+						{:else}
+							<button
+								class="btn btn-danger btn-sm"
+								disabled={actionLoading[env.id]}
+								onclick={() => {
+									if (confirm(`Delete environment "${env.name}"? This cannot be undone.`)) {
+										performAction(env.id, 'delete');
+									}
+								}}
+							>
+								{actionLoading[env.id] ? 'Deleting...' : 'Delete'}
+							</button>
+						{/if}
 					</div>
 				</div>
 			{/each}
@@ -254,11 +331,32 @@
 		font-weight: 500;
 	}
 
-	.detail-value.ip {
+	.ip {
 		font-size: 0.75rem;
 		background-color: rgba(255, 255, 255, 0.04);
 		padding: 1px 8px;
 		border-radius: var(--radius-sm);
+	}
+
+	.ip-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.port-link {
+		font-size: 0.6875rem;
+		font-weight: 600;
+		color: var(--accent);
+		background-color: rgba(99, 102, 241, 0.1);
+		padding: 1px 6px;
+		border-radius: 3px;
+		text-decoration: none;
+		transition: background-color var(--transition);
+	}
+
+	.port-link:hover {
+		background-color: rgba(99, 102, 241, 0.2);
 	}
 
 	.env-card-actions {

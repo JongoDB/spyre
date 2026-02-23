@@ -44,4 +44,10 @@ export interface CreateEnvironmentRequest {
   nesting?: boolean;
   ssh_enabled?: boolean;
   template_id?: string;
+  // Provisioner pipeline fields
+  default_user?: string;
+  community_script_slug?: string;
+  install_method_type?: string;
+  software_pool_ids?: string[];
+  custom_script?: string;
 }

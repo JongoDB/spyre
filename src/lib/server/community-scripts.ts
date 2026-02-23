@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getDb } from './db';
+import { getEnvConfig } from './env-config';
+import { authenticate, listAllOsTemplates } from './proxmox';
 import type { CommunityScript, CommunityScriptSearchParams, CommunityScriptListResult } from '$lib/types/community-script';
 import type { Template } from '$lib/types/template';
 import { createTemplate } from './templates';
@@ -29,6 +31,7 @@ function rowToScript(row: Record<string, unknown>): CommunityScript {
     default_username: (row.default_username as string) ?? null,
     default_password: (row.default_password as string) ?? null,
     notes: row.notes ? JSON.parse(row.notes as string) : [],
+    privileged: !!(row.privileged as number),
     fetched_at: row.fetched_at as string,
     source_hash: (row.source_hash as string) ?? null
   };
@@ -142,9 +145,9 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
     INSERT INTO community_scripts_cache (
       slug, name, description, type, categories, website, logo_url, documentation,
       interface_port, default_cpu, default_ram, default_disk, default_os, default_os_version,
-      script_path, install_methods, default_username, default_password, notes,
+      script_path, install_methods, default_username, default_password, notes, privileged,
       fetched_at, source_hash
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
     ON CONFLICT(slug) DO UPDATE SET
       name = excluded.name, description = excluded.description, type = excluded.type,
       categories = excluded.categories, website = excluded.website, logo_url = excluded.logo_url,
@@ -154,6 +157,7 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
       default_os_version = excluded.default_os_version, script_path = excluded.script_path,
       install_methods = excluded.install_methods, default_username = excluded.default_username,
       default_password = excluded.default_password, notes = excluded.notes,
+      privileged = excluded.privileged,
       fetched_at = datetime('now'), source_hash = excluded.source_hash
   `);
 
@@ -199,6 +203,15 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
         scriptType = 'ct';
       }
 
+      // Infer OS from name/slug if not in metadata
+      let osName = defaultMethod.os ?? null;
+      let osVersion = defaultMethod.version ?? null;
+      if (!osName) {
+        const inferred = inferOsFromName(data.name ?? slug, slug);
+        osName = inferred.os;
+        osVersion = inferred.version ?? osVersion;
+      }
+
       upsert.run(
         slug,
         data.name ?? slug,
@@ -212,13 +225,14 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
         defaultMethod.cpu ?? null,
         defaultMethod.ram ?? null,
         defaultMethod.hdd ?? null,
-        defaultMethod.os ?? null,
-        defaultMethod.version ?? null,
+        osName,
+        osVersion,
         installMethods[0]?.script ?? null,
         installMethods.length > 0 ? JSON.stringify(installMethods) : null,
         data.default_credentials?.username ?? null,
         data.default_credentials?.password ?? null,
         data.notes ? JSON.stringify(data.notes) : null,
+        data.privileged ? 1 : 0,
         hash
       );
 
@@ -232,7 +246,91 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
   return { added, updated, total: totalRow.count };
 }
 
-export function importAsTemplate(slug: string, templateName?: string): Template {
+/**
+ * Infer OS name and version from a script's name or slug when metadata is missing.
+ * E.g. "ubuntu2504-vm" → { os: "ubuntu", version: "25.04" }
+ *      "Debian 13" → { os: "debian", version: "13" }
+ */
+function inferOsFromName(name: string, slug: string): { os: string | null; version: string | null } {
+  const knownOs = ['ubuntu', 'debian', 'alpine', 'fedora', 'centos', 'rocky', 'alma', 'archlinux', 'opensuse', 'nixos', 'freebsd', 'openbsd'];
+
+  // Try slug first (more structured)
+  const slugLower = slug.toLowerCase();
+  for (const os of knownOs) {
+    if (slugLower.startsWith(os)) {
+      // Extract version: "ubuntu2504-vm" → "2504", "debian-13-vm" → "13"
+      const rest = slugLower.slice(os.length).replace(/^[-_]/, '');
+      const versionMatch = rest.match(/^(\d+[\d.]*)/);
+      if (versionMatch) {
+        let ver = versionMatch[1];
+        // Convert compact versions: "2504" → "25.04", "2404" → "24.04"
+        if (ver.length === 4 && !ver.includes('.')) {
+          ver = `${ver.slice(0, 2)}.${ver.slice(2)}`;
+        }
+        return { os: os === 'archlinux' ? 'archlinux' : os, version: ver };
+      }
+      return { os: os === 'archlinux' ? 'archlinux' : os, version: null };
+    }
+  }
+
+  // Try name (e.g. "Debian 12", "Ubuntu 25.04")
+  const nameLower = name.toLowerCase();
+  for (const os of knownOs) {
+    if (nameLower.includes(os)) {
+      const nameVersionMatch = nameLower.match(new RegExp(`${os}[\\s-]*(\\d+[\\d.]*)`));
+      if (nameVersionMatch) {
+        return { os, version: nameVersionMatch[1] };
+      }
+      return { os, version: null };
+    }
+  }
+
+  return { os: null, version: null };
+}
+
+/**
+ * Try to find a matching OS template on Proxmox based on os name and version.
+ * E.g. default_os="ubuntu", default_os_version="24.04" → "local:vztmpl/ubuntu-24.04-..."
+ */
+async function resolveOsTemplate(defaultOs: string | null, defaultVersion: string | null): Promise<string | undefined> {
+  if (!defaultOs) return undefined;
+
+  try {
+    const config = getEnvConfig();
+    await authenticate();
+    const templates = await listAllOsTemplates(config.proxmox.node_name);
+
+    const osLower = defaultOs.toLowerCase();
+    const ver = defaultVersion ?? '';
+
+    console.log(`[spyre] resolveOsTemplate: looking for os=${osLower} version=${ver} among ${templates.length} templates`);
+
+    // Try exact match first: os name + version in the volid
+    for (const tpl of templates) {
+      const volLower = tpl.volid.toLowerCase();
+      if (volLower.includes(osLower) && ver && volLower.includes(ver)) {
+        console.log(`[spyre] resolveOsTemplate: exact match → ${tpl.volid}`);
+        return tpl.volid;
+      }
+    }
+
+    // Try just OS name match
+    for (const tpl of templates) {
+      if (tpl.volid.toLowerCase().includes(osLower)) {
+        console.log(`[spyre] resolveOsTemplate: name match → ${tpl.volid}`);
+        return tpl.volid;
+      }
+    }
+
+    console.log(`[spyre] resolveOsTemplate: no matching template found`);
+  } catch (err) {
+    console.warn(`[spyre] resolveOsTemplate: failed to query Proxmox:`, err instanceof Error ? err.message : err);
+  }
+
+  return undefined;
+}
+
+export async function importAsTemplate(slug: string, templateName?: string): Promise<Template> {
   const script = getScript(slug);
   if (!script) {
     throw { code: 'NOT_FOUND', message: `Community script '${slug}' not found. Try syncing first.` };
@@ -240,14 +338,48 @@ export function importAsTemplate(slug: string, templateName?: string): Template 
 
   const name = templateName ?? `${script.name} (Community)`;
 
+  // Use script metadata, falling back to name-based inference
+  let osType = script.default_os;
+  let osVersion = script.default_os_version;
+  if (!osType) {
+    const inferred = inferOsFromName(script.name, slug);
+    osType = inferred.os;
+    osVersion = inferred.version ?? osVersion;
+    if (inferred.os) {
+      console.log(`[spyre] importAsTemplate: inferred OS from name — ${inferred.os} ${inferred.version ?? '(no version)'}`);
+    }
+  }
+
+  // Try to resolve the OS template from Proxmox
+  const osTemplate = await resolveOsTemplate(osType, osVersion);
+
+  // Find the default install method
+  const defaultMethod = script.install_methods.length > 0
+    ? script.install_methods[0]
+    : undefined;
+
   return createTemplate({
     name,
     description: script.description ?? `Imported from community script: ${script.name}`,
     type: script.type === 'vm' ? 'vm' : 'lxc',
+    os_template: osTemplate,
+    os_type: osType ?? undefined,
+    os_version: osVersion ?? undefined,
     cores: script.default_cpu ?? undefined,
     memory: script.default_ram ?? undefined,
     disk: script.default_disk ?? undefined,
     community_script_slug: slug,
+    install_method_type: defaultMethod?.type ?? 'default',
+    interface_port: script.interface_port ?? undefined,
+    default_credentials: {
+      username: script.default_username,
+      password: script.default_password
+    },
+    post_install_notes: script.notes ?? [],
+    unprivileged: !script.privileged,
+    privileged: script.privileged,
+    nesting: true,
+    ssh_enabled: true,
     installed_software: [script.name],
     tags: Array.isArray(script.categories) ? script.categories.map(String).join(', ') : undefined
   });

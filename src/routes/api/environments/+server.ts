@@ -27,8 +27,10 @@ export const POST: RequestHandler = async ({ request }) => {
   if (body.type !== 'lxc' && body.type !== 'vm') {
     throw error(400, "Environment type must be 'lxc' or 'vm'.");
   }
-  if (!body.template || typeof body.template !== 'string') {
-    throw error(400, 'A valid template identifier is required.');
+  if (!body.community_script_slug) {
+    if (!body.template || typeof body.template !== 'string') {
+      throw error(400, 'A valid template identifier is required.');
+    }
   }
   if (typeof body.cores !== 'number' || body.cores < 1) {
     throw error(400, 'Cores must be a positive number.');
