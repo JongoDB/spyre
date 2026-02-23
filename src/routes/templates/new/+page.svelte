@@ -423,7 +423,16 @@
 					<div class="form-row">
 						<div class="form-group">
 							<label for="tpl-bridge" class="form-label">Bridge</label>
-							<input id="tpl-bridge" type="text" class="form-input" placeholder={selectedProfile?.bridge ?? 'vmbr0'} bind:value={bridge} />
+							{#if (data.bridges as Array<{iface: string; type: string}>).length > 0}
+								<select id="tpl-bridge" class="form-select" bind:value={bridge}>
+									<option value="">{selectedProfile?.bridge ? `From profile (${selectedProfile.bridge})` : 'Default (vmbr0)'}</option>
+									{#each data.bridges as br}
+										<option value={br.iface}>{br.iface} ({br.type})</option>
+									{/each}
+								</select>
+							{:else}
+								<input id="tpl-bridge" type="text" class="form-input" placeholder={selectedProfile?.bridge ?? 'vmbr0'} bind:value={bridge} />
+							{/if}
 						</div>
 						<div class="form-group">
 							<label for="tpl-ip-mode" class="form-label">IP Mode</label>
@@ -550,8 +559,9 @@
 							<input id="tpl-root-pw" type="text" class="form-input" placeholder="Leave blank for key-only" autocomplete="new-password" bind:value={rootPassword} />
 						</div>
 						<div class="form-group">
-							<label for="tpl-default-user" class="form-label">Default User</label>
+							<label for="tpl-default-user" class="form-label">Default User (future)</label>
 							<input id="tpl-default-user" type="text" class="form-input" placeholder="e.g. dev" bind:value={defaultUser} />
+							<span class="form-hint">User will be created during provisioning. Currently root is used for access.</span>
 						</div>
 					</div>
 

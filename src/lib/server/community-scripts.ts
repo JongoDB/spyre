@@ -4,8 +4,9 @@ import type { CommunityScript, CommunityScriptSearchParams, CommunityScriptListR
 import type { Template } from '$lib/types/template';
 import { createTemplate } from './templates';
 
-const GITHUB_BASE = 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main';
-const METADATA_INDEX = `${GITHUB_BASE}/frontend/public/json`;
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main';
+const METADATA_JSON = `${GITHUB_RAW_BASE}/frontend/public/json`;
+const GITHUB_TREES_API = 'https://api.github.com/repos/community-scripts/ProxmoxVE/git/trees/main?recursive=1';
 
 function rowToScript(row: Record<string, unknown>): CommunityScript {
   return {
@@ -85,42 +86,53 @@ export function getLastSyncTime(): string | null {
   return row.last_sync;
 }
 
+async function fetchScriptSlugs(): Promise<string[]> {
+  // Use the GitHub Git Trees API to list all JSON files in the directory
+  const res = await fetch(GITHUB_TREES_API, {
+    headers: {
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Spyre/0.1'
+    }
+  });
+
+  if (!res.ok) {
+    throw new Error(`GitHub Trees API returned ${res.status}`);
+  }
+
+  const data = await res.json() as { tree: Array<{ path: string; type: string }> };
+
+  const slugs: string[] = [];
+  const prefix = 'frontend/public/json/';
+  const exclude = new Set(['metadata.json', 'version.json']);
+
+  for (const entry of data.tree) {
+    if (entry.type !== 'blob') continue;
+    if (!entry.path.startsWith(prefix)) continue;
+
+    const filename = entry.path.slice(prefix.length);
+    // Skip subdirectories and non-json files
+    if (filename.includes('/') || !filename.endsWith('.json')) continue;
+    if (exclude.has(filename)) continue;
+
+    slugs.push(filename.replace('.json', ''));
+  }
+
+  return slugs;
+}
+
 export async function syncFromGitHub(): Promise<{ added: number; updated: number; total: number }> {
   const db = getDb();
 
-  // Fetch the category index to get script slugs
-  // The community-scripts repo organizes metadata as individual JSON files
-  // We fetch the category index first, then individual files
   let scriptSlugs: string[];
-
   try {
-    // Try fetching the category index
-    const indexRes = await fetch(`${GITHUB_BASE}/frontend/public/json/index.json`);
-    if (indexRes.ok) {
-      const indexData = await indexRes.json();
-      // The index may be an array of objects or an object with slugs
-      if (Array.isArray(indexData)) {
-        scriptSlugs = indexData.map((item: { slug?: string; name?: string }) => item.slug ?? item.name).filter(Boolean) as string[];
-      } else {
-        scriptSlugs = Object.keys(indexData);
-      }
-    } else {
-      // Fallback: try the alphabetical listing approach
-      // Fetch the main metadata file that lists all scripts
-      const allRes = await fetch(`${GITHUB_BASE}/frontend/public/json/all.json`);
-      if (!allRes.ok) {
-        throw new Error(`Failed to fetch script index: HTTP ${allRes.status}`);
-      }
-      const allData = await allRes.json();
-      if (Array.isArray(allData)) {
-        scriptSlugs = allData.map((item: { slug?: string }) => item.slug).filter(Boolean) as string[];
-      } else {
-        scriptSlugs = Object.keys(allData);
-      }
-    }
+    scriptSlugs = await fetchScriptSlugs();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw { code: 'SYNC_FAILED', message: `Failed to fetch community scripts index: ${message}` };
+  }
+
+  if (scriptSlugs.length === 0) {
+    throw { code: 'SYNC_FAILED', message: 'No scripts found in the community-scripts repository.' };
   }
 
   let added = 0;
@@ -145,13 +157,15 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
       fetched_at = datetime('now'), source_hash = excluded.source_hash
   `);
 
-  // Batch fetch — process in chunks to avoid overwhelming the API
-  const chunkSize = 10;
+  // Batch fetch in chunks to avoid overwhelming GitHub
+  const chunkSize = 20;
   for (let i = 0; i < scriptSlugs.length; i += chunkSize) {
     const chunk = scriptSlugs.slice(i, i + chunkSize);
     const results = await Promise.allSettled(
       chunk.map(async (slug) => {
-        const res = await fetch(`${METADATA_INDEX}/${slug}.json`);
+        const res = await fetch(`${METADATA_JSON}/${slug}.json`, {
+          headers: { 'User-Agent': 'Spyre/0.1' }
+        });
         if (!res.ok) return null;
         const data = await res.json();
         return { slug, data };
@@ -175,22 +189,32 @@ export async function syncFromGitHub(): Promise<{ added: number; updated: number
       const installMethods = data.install_methods ?? [];
       const defaultMethod = installMethods[0]?.resources ?? {};
 
+      // Categories are stored as integer IDs in the repo
+      const categories = data.categories ?? [];
+
+      // Map type field
+      let scriptType = data.type ?? null;
+      if (scriptType && scriptType !== 'ct' && scriptType !== 'vm') {
+        // Types like 'pve', 'addon', 'turnkey' — normalize to ct
+        scriptType = 'ct';
+      }
+
       upsert.run(
         slug,
         data.name ?? slug,
         data.description ?? null,
-        data.type ?? null,
-        data.categories ? JSON.stringify(data.categories) : null,
+        scriptType,
+        categories.length > 0 ? JSON.stringify(categories) : null,
         data.website ?? null,
         data.logo ?? null,
         data.documentation ?? null,
         data.interface_port ?? null,
-        defaultMethod.cpu ?? data.default_cpu ?? null,
-        defaultMethod.ram ?? data.default_ram ?? null,
-        defaultMethod.hdd ?? data.default_disk ?? null,
-        defaultMethod.os ?? data.default_os ?? null,
-        defaultMethod.version ?? data.default_os_version ?? null,
-        data.script_path ?? null,
+        defaultMethod.cpu ?? null,
+        defaultMethod.ram ?? null,
+        defaultMethod.hdd ?? null,
+        defaultMethod.os ?? null,
+        defaultMethod.version ?? null,
+        installMethods[0]?.script ?? null,
         installMethods.length > 0 ? JSON.stringify(installMethods) : null,
         data.default_credentials?.username ?? null,
         data.default_credentials?.password ?? null,
@@ -225,7 +249,7 @@ export function importAsTemplate(slug: string, templateName?: string): Template 
     disk: script.default_disk ?? undefined,
     community_script_slug: slug,
     installed_software: [script.name],
-    tags: script.categories.join(', ') || undefined
+    tags: Array.isArray(script.categories) ? script.categories.map(String).join(', ') : undefined
   });
 }
 
@@ -235,9 +259,11 @@ export function getAllCategories(): string[] {
 
   const categorySet = new Set<string>();
   for (const row of rows) {
-    const cats: string[] = JSON.parse(row.categories);
-    for (const cat of cats) {
-      categorySet.add(cat);
+    const cats = JSON.parse(row.categories);
+    if (Array.isArray(cats)) {
+      for (const cat of cats) {
+        categorySet.add(String(cat));
+      }
     }
   }
 

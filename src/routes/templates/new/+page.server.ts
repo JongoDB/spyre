@@ -2,7 +2,7 @@ import type { PageServerLoad } from './$types';
 import { listPresets } from '$lib/server/resource-presets';
 import { listProfiles } from '$lib/server/network-profiles';
 import { listPools } from '$lib/server/software-pools';
-import { authenticate, listTemplates as listOsTemplates } from '$lib/server/proxmox';
+import { authenticate, listTemplates as listOsTemplates, listNetworkBridges } from '$lib/server/proxmox';
 import { getEnvConfig } from '$lib/server/env-config';
 
 export const load: PageServerLoad = async () => {
@@ -11,17 +11,22 @@ export const load: PageServerLoad = async () => {
 	const pools = listPools();
 
 	let osTemplates: Array<{ volid: string }> = [];
+	let bridges: Array<{ iface: string; type: string }> = [];
 	let proxmoxConnected = false;
 
 	try {
 		const config = getEnvConfig();
 		await authenticate();
 		proxmoxConnected = true;
-		const tpls = await listOsTemplates(config.proxmox.node_name, config.defaults.storage);
+		const [tpls, br] = await Promise.all([
+			listOsTemplates(config.proxmox.node_name, config.defaults.storage),
+			listNetworkBridges(config.proxmox.node_name)
+		]);
 		osTemplates = tpls ?? [];
+		bridges = br ?? [];
 	} catch {
 		proxmoxConnected = false;
 	}
 
-	return { presets, profiles, pools, osTemplates, proxmoxConnected };
+	return { presets, profiles, pools, osTemplates, bridges, proxmoxConnected };
 };

@@ -168,7 +168,17 @@
 {#snippet formRow(form: ProfileForm, onSubmit: () => void, onCancel: () => void)}
   <tr class="form-row">
     <td><input class="form-input cell-input" type="text" placeholder="e.g. Default LAN" bind:value={form.name} /></td>
-    <td><input class="form-input cell-input" type="text" placeholder="vmbr0" bind:value={form.bridge} /></td>
+    <td>
+      {#if (data.bridges as Array<{iface: string; type: string}>).length > 0}
+        <select class="form-select cell-input" bind:value={form.bridge}>
+          {#each data.bridges as br}
+            <option value={br.iface}>{br.iface}</option>
+          {/each}
+        </select>
+      {:else}
+        <input class="form-input cell-input" type="text" placeholder="vmbr0" bind:value={form.bridge} />
+      {/if}
+    </td>
     <td>
       <select class="form-select cell-input" bind:value={form.ip_mode}>
         <option value="dhcp">DHCP</option>

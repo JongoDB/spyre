@@ -232,6 +232,53 @@ export async function listTemplates(node: string, storage: string): Promise<Prox
   );
 }
 
+// --- Network (bridges) ---
+
+export interface ProxmoxBridge {
+  iface: string;
+  type: string;
+  active: number;
+  method: string;
+  address?: string;
+  netmask?: string;
+  gateway?: string;
+  bridge_ports?: string;
+  bridge_stp?: string;
+  bridge_fd?: string;
+  families?: string[];
+  autostart?: number;
+  comments?: string;
+}
+
+export async function listNetworkBridges(node: string): Promise<ProxmoxBridge[]> {
+  const all = await proxmoxFetch<ProxmoxBridge[]>(
+    `/nodes/${encodeURIComponent(node)}/network`
+  );
+  // Filter to only bridges (Linux bridges and OVS bridges)
+  return all.filter(iface =>
+    iface.type === 'bridge' || iface.type === 'OVSBridge'
+  );
+}
+
+// --- Exec (run commands inside containers via PVE 8+ API) ---
+
+export async function proxmoxExec(
+  node: string,
+  vmid: number,
+  command: string
+): Promise<void> {
+  const body = new URLSearchParams();
+  body.set('command', command);
+  await proxmoxFetch<unknown>(
+    `/nodes/${encodeURIComponent(node)}/lxc/${vmid}/exec`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    }
+  );
+}
+
 // --- Tasks ---
 
 export async function getTaskStatus(node: string, upid: string): Promise<ProxmoxTaskStatus> {

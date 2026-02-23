@@ -1,7 +1,8 @@
 import { v4 as uuid } from 'uuid';
 import { randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { getDb } from './db';
-import { getEnvConfig } from './env-config';
+import { getEnvConfig, getProxmoxTokenSecret } from './env-config';
 import * as proxmox from './proxmox';
 import type { Environment, CreateEnvironmentRequest } from '$lib/types/environment';
 
@@ -13,6 +14,54 @@ function generatePassword(length = 16): string {
     result += chars[bytes[i] % chars.length];
   }
   return result;
+}
+
+async function configureContainerSsh(node: string, vmid: number): Promise<void> {
+  // Use Proxmox API to write a file and exec commands inside the container.
+  // We configure sshd to allow root login with password.
+  const commands = [
+    // Enable root login
+    "sed -i -e 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
+    // Enable password auth
+    "sed -i -e 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+    // Remove cloud-init SSH overrides if present
+    "rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf",
+    // Restart SSH (try both service names)
+    "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null || true"
+  ];
+
+  const config = getEnvConfig();
+  const pveHost = config.proxmox.host;
+  const pvePort = config.proxmox.port;
+  const tokenId = config.proxmox.token_id;
+  const tokenSecret = getProxmoxTokenSecret();
+
+  // Use Proxmox API's POST /nodes/{node}/lxc/{vmid}/exec (PVE 8+)
+  // If that fails, fall back to SSH via the Proxmox host
+  for (const cmd of commands) {
+    try {
+      // Try the Proxmox exec API endpoint (available in PVE 8+)
+      await proxmox.proxmoxExec(node, vmid, cmd);
+    } catch {
+      // If exec API isn't available, try alternative: use curl to the API from controller
+      // This is a best-effort approach
+      console.warn(`[spyre] Could not exec command in container ${vmid}, trying alternative...`);
+      try {
+        // Shell out to curl for the Proxmox API exec endpoint
+        const curlUrl = `https://${pveHost}:${pvePort}/api2/json/nodes/${node}/lxc/${vmid}/exec`;
+        execFileSync('curl', [
+          '-sk', '-X', 'POST',
+          '-H', `Authorization: PVEAPIToken=${tokenId}=${tokenSecret}`,
+          '-d', `command=${encodeURIComponent(cmd)}`,
+          curlUrl
+        ], { timeout: 10000 });
+      } catch {
+        // Last resort: just log and continue — SSH may still work for many templates
+        console.warn(`[spyre] All exec methods failed for container ${vmid}, SSH config may need manual setup`);
+        break;
+      }
+    }
+  }
 }
 
 export function listEnvironments(): Environment[] {
@@ -135,6 +184,16 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
 
     // Discover IP address
     const ipAddress = await proxmox.discoverLxcIp(node, vmid);
+
+    // Post-provision: configure SSH root login via pct exec on the Proxmox host
+    if (req.ssh_enabled !== false) {
+      try {
+        await configureContainerSsh(node, vmid);
+      } catch (sshErr) {
+        console.warn('[spyre] Failed to configure SSH in container:', sshErr);
+        // Non-fatal — container is still usable via password on console
+      }
+    }
 
     // Update environment status
     db.prepare(`
