@@ -131,7 +131,7 @@
 		</nav>
 
 		<div class="sidebar-footer">
-			<span class="version-tag">v0.1.0</span>
+			<span class="version-tag">v{__APP_VERSION__}</span>
 		</div>
 	</aside>
 

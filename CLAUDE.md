@@ -113,3 +113,16 @@ These are Phase 2+ features per the implementation plan. Do not build, scaffold,
 | `docs/spyre-architecture.md` | Full architecture and design rationale |
 | `docs/implementation-plan.md` | Phased build sequence |
 | `docs/verified-examples.md` | Tested curl/CLI snippets from this environment |
+
+---
+
+## Version Bumps
+
+When bumping the version (minor or major), update **only** `package.json`. The UI version tag in the sidebar reads from `package.json` automatically at build time via Vite's `define` (`__APP_VERSION__`).
+
+**Checklist:**
+1. Update `"version"` in `package.json`
+2. `git tag -a vX.Y.Z -m "release notes"`
+3. `git push && git push origin vX.Y.Z`
+
+No other files need manual version edits.
