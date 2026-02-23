@@ -12,7 +12,8 @@ import type { SoftwarePoolItem } from '$lib/types/template';
 import type { CommunityScript, CommunityScriptInstallMethod } from '$lib/types/community-script';
 
 function generatePassword(length = 16): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
+  // Only use shell-safe characters — no quotes, backslashes, or special shell metacharacters
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   const bytes = randomBytes(length);
   let result = '';
   for (let i = 0; i < length; i++) {
@@ -504,13 +505,14 @@ function buildCommunityScriptCommand(
   req: CreateEnvironmentRequest,
   config: ReturnType<typeof getEnvConfig>,
   templateStorage: string,
-  sshPubKey: string | undefined
+  sshPubKey: string | undefined,
+  rootPassword: string
 ): string {
   const containerStorage = req.storage ?? config.defaults.storage;
   const bridge = req.bridge ?? config.defaults.bridge;
   const dns = req.nameserver ?? config.defaults.dns ?? '8.8.8.8';
   const gateway = config.defaults.gateway ?? '';
-  const password = req.password || generatePassword();
+  const password = rootPassword;
 
   // Build var_* exports
   const vars: Record<string, string> = {
@@ -523,7 +525,6 @@ function buildCommunityScriptCommand(
     var_nesting: (req.nesting !== false) ? '1' : '0',
     var_brg: bridge,
     var_net: req.ip ?? 'dhcp',
-    var_gateway: gateway,
     var_ns: dns,
     var_pw: password,
     var_ssh: req.ssh_enabled !== false ? 'yes' : 'no',
@@ -531,9 +532,14 @@ function buildCommunityScriptCommand(
     var_template_storage: templateStorage,
     var_hostname: req.name,
     var_verbose: 'no',
-    var_tags: `spyre`,
+    var_tags: 'spyre',
     var_timezone: 'host',
   };
+
+  // Only set gateway if we have one — empty string can confuse scripts
+  if (gateway) {
+    vars.var_gateway = gateway;
+  }
 
   if (sshPubKey) {
     vars.var_ssh_authorized_key = sshPubKey;
@@ -649,19 +655,22 @@ async function createViaCommunityScript(
   const templateStorage = await discoverTemplateStorage();
 
   // Build the command
-  const command = buildCommunityScriptCommand(script, method, req, config, templateStorage, sshPubKey);
+  const command = buildCommunityScriptCommand(script, method, req, config, templateStorage, sshPubKey, rootPassword);
 
   // Log and execute
   logProvisioningStep(id, 'community_script', 'running', `Running ${script.name} on Proxmox host...`);
+  const maskedCommand = command.replace(/var_pw='[^']*'/, "var_pw='***'");
   console.log(`[spyre] Running community script '${script.name}' (method: ${method.type}) on Proxmox host`);
+  console.log(`[spyre] Command (password masked):\n${maskedCommand}`);
 
   const result = await runCommunityScriptOnHost(command);
   const fullOutput = result.stdout + result.stderr;
 
   if (result.code !== 0) {
+    const outputTail = fullOutput.slice(-2000);
     logProvisioningStep(id, 'community_script', 'error', `Script exited with code ${result.code}`);
-    console.warn(`[spyre] Community script failed (exit ${result.code}):`, result.stderr.slice(0, 500));
-    throw { code: 'SCRIPT_FAILED', message: `Community script '${script.name}' failed with exit code ${result.code}.` };
+    console.warn(`[spyre] Community script failed (exit ${result.code}). Last 2000 chars of output:\n${outputTail}`);
+    throw { code: 'SCRIPT_FAILED', message: `Community script '${script.name}' failed (exit ${result.code}). Output tail: ${outputTail.slice(-500)}` };
   }
 
   logProvisioningStep(id, 'community_script', 'success', `${script.name} installed successfully.`);
