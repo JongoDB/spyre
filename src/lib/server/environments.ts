@@ -539,12 +539,16 @@ function buildCommunityScriptCommand(
 ): string {
   const containerStorage = req.storage ?? config.defaults.storage;
   const bridge = req.bridge ?? config.defaults.bridge;
-  const dns = req.nameserver ?? config.defaults.dns ?? '8.8.8.8';
-  const gateway = config.defaults.gateway ?? '';
   const password = rootPassword;
   const hostname = sanitizeHostname(req.name);
 
   // Build var_* exports — these map to internal variables in build.func's base_settings()
+  //
+  // IMPORTANT: Do NOT set var_ns (DNS) or var_gateway here.
+  // In build.func, advanced_settings() reformats these into pct-create options
+  // (e.g., NS → "-nameserver=8.8.8.8"), but in mode=default that reformatting
+  // is skipped. Setting them as raw values causes "too many arguments" errors
+  // in pct create. Containers inherit DNS from the Proxmox host by default.
   const vars: Record<string, string> = {
     var_cpu: String(req.cores),
     var_ram: String(req.memory),
@@ -555,7 +559,6 @@ function buildCommunityScriptCommand(
     var_nesting: (req.nesting !== false) ? '1' : '0',
     var_brg: bridge,
     var_net: req.ip ?? 'dhcp',
-    var_ns: dns,
     var_pw: password,
     var_ssh: req.ssh_enabled !== false ? 'yes' : 'no',
     var_container_storage: containerStorage,
@@ -565,11 +568,6 @@ function buildCommunityScriptCommand(
     var_tags: 'spyre',
     var_timezone: 'host',
   };
-
-  // Only set gateway if we have one — empty string can confuse scripts
-  if (gateway) {
-    vars.var_gateway = gateway;
-  }
 
   if (sshPubKey) {
     vars.var_ssh_authorized_key = sshPubKey;
@@ -585,16 +583,12 @@ function buildCommunityScriptCommand(
     .join('; ');
 
   // Whiptail wrapper: intercepts all whiptail/dialog calls to auto-respond.
-  // whiptail outputs selections to STDERR (that's the standard behavior).
+  // Uses printf instead of heredoc since heredoc delimiters need their own line
+  // but we're building a semicolon-joined command string.
   // --yesno returns 1 (No) to skip debug prompts on failure.
   // --msgbox/--infobox returns 0.
-  // --menu/--radiolist/--inputbox: output the first option or empty to stderr, return 0.
-  // This prevents segfaults when no TTY is available.
-  const whiptailWrapper = [
-    'mkdir -p /tmp/spyre-bin',
-    `cat > /tmp/spyre-bin/whiptail << 'SPYRE_WHIPTAIL_EOF'
-#!/bin/bash
-# Auto-responder for non-interactive community script execution
+  // --menu/--radiolist/--inputbox: echo empty to stderr, return 0.
+  const whiptailScript = `#!/bin/bash
 MODE=""
 for arg in "$@"; do
   case "$arg" in
@@ -609,8 +603,14 @@ case "$MODE" in
   msg) exit 0 ;;
   menu|input) echo "" >&2; exit 0 ;;
   *) exit 0 ;;
-esac
-SPYRE_WHIPTAIL_EOF`,
+esac`;
+
+  // Base64-encode the script to avoid quoting issues in the command
+  const whiptailB64 = Buffer.from(whiptailScript).toString('base64');
+
+  const whiptailWrapper = [
+    'mkdir -p /tmp/spyre-bin',
+    `echo '${whiptailB64}' | base64 -d > /tmp/spyre-bin/whiptail`,
     'chmod +x /tmp/spyre-bin/whiptail',
     'export PATH="/tmp/spyre-bin:$PATH"',
   ].join('; ');
@@ -751,6 +751,8 @@ async function createViaCommunityScript(
 
   const result = await runCommunityScriptOnHost(command);
   const fullOutput = result.stdout + result.stderr;
+
+  console.log(`[spyre] Script exit code: ${result.code}, output: ${result.stdout.length + result.stderr.length} chars`);
 
   if (result.code !== 0) {
     logProvisioningStep(id, 'community_script', 'error', `Script exited with code ${result.code}`);
