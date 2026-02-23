@@ -242,10 +242,11 @@
 		}
 	});
 
-	// Font size changes
+	// Font size changes — read fontSize unconditionally so Svelte tracks it
 	$effect(() => {
-		if (term && fontSize) {
-			term.options.fontSize = fontSize;
+		const size = fontSize;
+		if (term) {
+			term.options.fontSize = size;
 			fitAddon?.fit();
 		}
 	});
