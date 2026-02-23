@@ -3,17 +3,17 @@
 
 	let { data }: { data: PageData } = $props();
 
-	let greeting = $derived(() => {
+	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
 		if (hour < 12) return 'Good morning';
-		if (hour < 18) return 'Good afternoon';
+		if (hour < 17) return 'Good afternoon';
 		return 'Good evening';
 	});
 </script>
 
 <div class="dashboard">
 	<header class="page-header">
-		<h1>{greeting()}</h1>
+		<h1>{greeting}</h1>
 		<p class="subtitle">Here is an overview of your Spyre infrastructure.</p>
 	</header>
 
