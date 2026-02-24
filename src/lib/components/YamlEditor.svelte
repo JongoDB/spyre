@@ -18,7 +18,9 @@
 	let editorView: import('@codemirror/view').EditorView | undefined;
 	let mounted = false;
 
-	onMount(async () => {
+	onMount(() => {
+		let cleanup: (() => void) | undefined;
+		(async () => {
 		const { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } = await import('@codemirror/view');
 		const { EditorState } = await import('@codemirror/state');
 		const { yaml } = await import('@codemirror/lang-yaml');
@@ -87,8 +89,13 @@
 
 		mounted = true;
 
-		return () => {
+		cleanup = () => {
 			editorView?.destroy();
+		};
+		})();
+
+		return () => {
+			cleanup?.();
 		};
 	});
 

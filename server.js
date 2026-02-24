@@ -211,24 +211,110 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const server = createServer(handler);
 const wss = new WebSocketServer({ noServer: true });
 
+// =============================================================================
+// Claude Bridge — import dynamically to access EventEmitter from build
+// =============================================================================
+
+let claudeBridgeEmitter = null;
+
+async function getClaudeBridgeEmitter() {
+  if (claudeBridgeEmitter) return claudeBridgeEmitter;
+  try {
+    const mod = await import('./build/server/chunks/claude-bridge.js').catch(() => null);
+    if (mod?.getEmitter) {
+      claudeBridgeEmitter = mod.getEmitter();
+      return claudeBridgeEmitter;
+    }
+  } catch { /* not available */ }
+  return null;
+}
+
+function attachClaudeStream(ws, taskId) {
+  // Check task exists
+  const task = db.prepare('SELECT * FROM claude_tasks WHERE id = ?').get(taskId);
+  if (!task) {
+    sendJson(ws, { type: 'error', message: 'Task not found' });
+    ws.close();
+    return;
+  }
+
+  // If task already completed, send final state
+  if (task.status === 'complete' || task.status === 'error' || task.status === 'cancelled') {
+    sendJson(ws, { type: 'complete', taskId, status: task.status, result: task.result });
+    ws.close();
+    return;
+  }
+
+  // Send accumulated output so far
+  if (task.output) {
+    sendJson(ws, { type: 'output', data: task.output, taskId });
+  }
+
+  // Subscribe to live events
+  getClaudeBridgeEmitter().then((emitter) => {
+    if (!emitter) {
+      sendJson(ws, { type: 'error', message: 'Claude bridge not available' });
+      ws.close();
+      return;
+    }
+
+    const onOutput = (event) => {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify(event));
+      }
+    };
+
+    const onComplete = (event) => {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'complete', ...event }));
+        ws.close();
+      }
+      cleanup();
+    };
+
+    function cleanup() {
+      emitter.removeListener(`task:${taskId}:output`, onOutput);
+      emitter.removeListener(`task:${taskId}:complete`, onComplete);
+    }
+
+    emitter.on(`task:${taskId}:output`, onOutput);
+    emitter.on(`task:${taskId}:complete`, onComplete);
+
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
+  });
+}
+
 server.on('upgrade', (req, socket, head) => {
   const url = req.url;
   if (!url) return;
 
-  const match = url.match(/^\/api\/terminal\/([^/?]+)/);
-  if (!match || url.includes('/windows')) return;
+  // Terminal WebSocket: /api/terminal/{envId}
+  const terminalMatch = url.match(/^\/api\/terminal\/([^/?]+)/);
+  if (terminalMatch && !url.includes('/windows')) {
+    const envId = terminalMatch[1];
+    const queryStart = url.indexOf('?');
+    const params = new URLSearchParams(queryStart >= 0 ? url.slice(queryStart) : '');
+    const windowIndex = params.get('windowIndex') ? parseInt(params.get('windowIndex'), 10) : undefined;
+    const cols = params.get('cols') ? parseInt(params.get('cols'), 10) : undefined;
+    const rows = params.get('rows') ? parseInt(params.get('rows'), 10) : undefined;
 
-  const envId = match[1];
-  const queryStart = url.indexOf('?');
-  const params = new URLSearchParams(queryStart >= 0 ? url.slice(queryStart) : '');
-  const windowIndex = params.get('windowIndex') ? parseInt(params.get('windowIndex'), 10) : undefined;
-  const cols = params.get('cols') ? parseInt(params.get('cols'), 10) : undefined;
-  const rows = params.get('rows') ? parseInt(params.get('rows'), 10) : undefined;
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+      attachTerminal(ws, { envId, windowIndex, cols, rows });
+    });
+    return;
+  }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
-    attachTerminal(ws, { envId, windowIndex, cols, rows });
-  });
+  // Claude task stream WebSocket: /api/claude/tasks/{taskId}/stream
+  const claudeMatch = url.match(/^\/api\/claude\/tasks\/([^/?]+)\/stream/);
+  if (claudeMatch) {
+    const taskId = claudeMatch[1];
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      attachClaudeStream(ws, taskId);
+    });
+    return;
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import ClaudeAuthPanel from '$lib/components/ClaudeAuthPanel.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -32,6 +33,19 @@
 			</span>
 		</div>
 	</section>
+
+	<!-- Claude auth status -->
+	<ClaudeAuthPanel authState={data.claudeAuthState} compact={true} />
+
+	{#if data.activeTasks.length > 0}
+		<section class="active-tasks-banner">
+			<div class="active-tasks-info">
+				<div class="active-dot"></div>
+				<span>{data.activeTasks.length} active Claude task{data.activeTasks.length > 1 ? 's' : ''}</span>
+			</div>
+			<a href="/claude/tasks" class="btn btn-secondary btn-sm">View tasks</a>
+		</section>
+	{/if}
 
 	<!-- Stats grid -->
 	<section class="stats-grid">
@@ -169,6 +183,40 @@
 	.connectivity-status {
 		font-size: 0.75rem;
 		color: var(--text-secondary);
+	}
+
+	/* ---- Active tasks banner ---- */
+
+	.active-tasks-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 16px;
+		border-radius: var(--radius);
+		border: 1px solid rgba(99, 102, 241, 0.2);
+		background-color: rgba(99, 102, 241, 0.06);
+		margin-bottom: 16px;
+		font-size: 0.8125rem;
+	}
+
+	.active-tasks-info {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+
+	.active-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background-color: var(--accent);
+		box-shadow: 0 0 6px rgba(99, 102, 241, 0.5);
+		animation: pulse 2s infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
 	}
 
 	/* ---- Stats grid ---- */

@@ -6,7 +6,7 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import * as proxmox from './proxmox';
 import { getScript } from './community-scripts';
-import { runPipeline } from './provisioner';
+import { runPipeline, injectSpyreTracking } from './provisioner';
 import type { ProvisionerContext } from './provisioner';
 import type { Environment, CreateEnvironmentRequest } from '$lib/types/environment';
 import type { CommunityScript, CommunityScriptInstallMethod } from '$lib/types/community-script';
@@ -649,6 +649,14 @@ async function createViaCommunityScript(
     // Non-fatal — container is created and the app is installed
   }
 
+  // Inject .spyre tracking and Claude CLI
+  try {
+    const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
+    await injectSpyreTracking(ctx.exec);
+  } catch (trackErr) {
+    console.warn('[spyre] Spyre tracking injection failed (non-fatal):', trackErr);
+  }
+
   // Update environment status
   db.prepare(`
     UPDATE environments
@@ -810,6 +818,14 @@ async function createViaProxmoxApi(
   } catch (provErr) {
     console.warn('[spyre] Provisioner pipeline error:', provErr);
     // Non-fatal — container is created and accessible
+  }
+
+  // Inject .spyre tracking and Claude CLI
+  try {
+    const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
+    await injectSpyreTracking(ctx.exec);
+  } catch (trackErr) {
+    console.warn('[spyre] Spyre tracking injection failed (non-fatal):', trackErr);
   }
 
   // Update environment status

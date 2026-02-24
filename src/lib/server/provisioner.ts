@@ -1,6 +1,8 @@
+import { readFileSync, existsSync } from 'node:fs';
 import { getDb } from './db';
 import { getPool } from './software-pools';
 import { getScript } from './community-scripts';
+import { getEnvConfig } from './env-config';
 import type { SoftwarePoolItem } from '$lib/types/template';
 
 // =============================================================================
@@ -373,6 +375,143 @@ export async function createDefaultUser(
   }
 
   console.log(`[spyre] Default user '${username}' created with sudo access`);
+}
+
+// =============================================================================
+// Spyre Tracking Injection
+// =============================================================================
+
+const SPYRE_CLAUDE_MD = `# Spyre Progress Tracking
+
+This environment is managed by Spyre. Maintain \`.spyre/progress.json\` to provide
+visibility into your work.
+
+## Rules
+
+1. Update \`.spyre/progress.json\` after completing each significant step
+2. Keep \`current_task\` updated with what you are actively doing
+3. Move phases from \`in_progress\` to \`completed\` when done
+4. Add blockers to the \`blockers\` array; clear when resolved
+5. Update \`metrics\` with files_changed, tests_passing, tests_failing when applicable
+6. Always update \`updated_at\` with current ISO timestamp
+
+## progress.json Schema
+
+\`\`\`json
+{
+  "plan": "High-level description of the goal",
+  "phases": [
+    { "name": "Phase name", "status": "pending|in_progress|completed|error", "detail": "Current activity" }
+  ],
+  "current_task": "What you are doing right now",
+  "blockers": [],
+  "metrics": { "files_changed": 0, "tests_passing": 0, "tests_failing": 0 },
+  "updated_at": "ISO timestamp"
+}
+\`\`\`
+
+## When to Update
+
+- Starting work: set \`plan\`, add phases as \`pending\`, set first to \`in_progress\`
+- Completing a phase: set to \`completed\`, advance next to \`in_progress\`
+- Encountering a problem: add to \`blockers\`, set phase to \`error\` with detail
+- After running tests: update \`metrics.tests_passing\` and \`metrics.tests_failing\`
+`;
+
+const EMPTY_PROGRESS = JSON.stringify({
+  plan: null,
+  phases: [],
+  current_task: null,
+  blockers: [],
+  metrics: { files_changed: 0, tests_passing: 0, tests_failing: 0 },
+  updated_at: null
+}, null, 2);
+
+/**
+ * Inject .spyre/ tracking directory and CLAUDE.md into an environment.
+ * Also installs Claude CLI if not already present.
+ */
+export async function injectSpyreTracking(
+  exec: ProvisionerContext['exec'],
+  workingDir?: string
+): Promise<void> {
+  const baseDir = workingDir ?? '/root';
+
+  // Create .spyre directory
+  await exec(`mkdir -p '${baseDir}/.spyre'`, 10000);
+
+  // Seed progress.json with empty schema
+  const progressPath = `${baseDir}/.spyre/progress.json`;
+  const writeProgress = `cat > '${progressPath}' << 'SPYRE_PROGRESS_EOF'\n${EMPTY_PROGRESS}\nSPYRE_PROGRESS_EOF`;
+  await exec(writeProgress, 10000);
+
+  // Write/append CLAUDE.md with tracking instructions
+  const claudeMdPath = `${baseDir}/CLAUDE.md`;
+  // Escape the content for heredoc
+  const writeMd = `cat >> '${claudeMdPath}' << 'SPYRE_CLAUDEMD_EOF'\n${SPYRE_CLAUDE_MD}\nSPYRE_CLAUDEMD_EOF`;
+  await exec(writeMd, 10000);
+
+  // Install Claude CLI (non-fatal if fails)
+  try {
+    const checkResult = await exec('which claude 2>/dev/null || command -v claude 2>/dev/null', 5000);
+    if (checkResult.code !== 0) {
+      console.log('[spyre] Installing Claude CLI...');
+      await exec('curl -fsSL https://claude.ai/install.sh | sh', 120000);
+      console.log('[spyre] Claude CLI installed');
+    } else {
+      console.log('[spyre] Claude CLI already installed');
+    }
+  } catch (err) {
+    console.warn('[spyre] Claude CLI installation failed (non-fatal):', err);
+  }
+
+  // Propagate controller's Claude auth credentials into environment (non-fatal)
+  try {
+    await propagateClaudeAuth(exec, baseDir);
+  } catch (err) {
+    console.warn('[spyre] Claude auth propagation failed (non-fatal):', err);
+  }
+}
+
+/**
+ * Copy the controller's Claude credentials into an environment so Claude CLI
+ * works immediately without requiring a separate OAuth flow.
+ */
+async function propagateClaudeAuth(
+  exec: ProvisionerContext['exec'],
+  baseDir: string
+): Promise<void> {
+  const config = getEnvConfig();
+  const authPath = (config.claude?.auth_json_path ?? '~/.claude/.credentials.json')
+    .replace('~', process.env.HOME ?? '/root');
+
+  if (!existsSync(authPath)) {
+    console.log('[spyre] No controller Claude credentials to propagate');
+    return;
+  }
+
+  const credentials = readFileSync(authPath, 'utf-8');
+
+  // Validate it's valid JSON before propagating
+  try {
+    JSON.parse(credentials);
+  } catch {
+    console.warn('[spyre] Controller credentials file is not valid JSON, skipping propagation');
+    return;
+  }
+
+  // Create ~/.claude directory in the environment (using the env user's home)
+  const envClaudeDir = `${baseDir}/.claude`;
+  await exec(`mkdir -p '${envClaudeDir}'`, 10000);
+
+  // Write credentials via heredoc (safe for JSON content)
+  const writeCmd = `cat > '${envClaudeDir}/.credentials.json' << 'SPYRE_CREDS_EOF'\n${credentials}\nSPYRE_CREDS_EOF`;
+  await exec(writeCmd, 10000);
+
+  // Secure the file
+  await exec(`chmod 600 '${envClaudeDir}/.credentials.json'`, 5000);
+
+  console.log('[spyre] Claude credentials propagated to environment');
 }
 
 // =============================================================================

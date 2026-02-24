@@ -426,3 +426,38 @@ INSERT OR IGNORE INTO categories (id, name, description, icon, sort_order) VALUE
     ('cat-23', 'Finance & Budgeting',        'Financial management and budgeting tools',              'dollar-sign',     23),
     ('cat-24', 'Gaming & Leisure',           'Game servers and entertainment platforms',              'gamepad-2',       24),
     ('cat-25', 'Business & ERP',             'Business operations and management tools',              'building',        25);
+
+-- =============================================================================
+-- Claude Progress — Cached progress.json from environments
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS claude_progress (
+    env_id       TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+    progress     TEXT,           -- Full JSON of .spyre/progress.json
+    fetched_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Claude Git Activity — Cached git state from environments
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS claude_git_activity (
+    env_id          TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+    recent_commits  TEXT,        -- JSON array of {hash, message, author, date}
+    diff_stat       TEXT,        -- git diff --stat output
+    git_status      TEXT,        -- git status --short
+    branch          TEXT,        -- current branch
+    fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Claude Task Queue — Queued prompts waiting to be dispatched
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS claude_task_queue (
+    id         TEXT PRIMARY KEY,
+    env_id     TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+    prompt     TEXT NOT NULL,
+    position   INTEGER NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'queued'
+               CHECK (status IN ('queued', 'dispatched', 'cancelled')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_queue_env ON claude_task_queue(env_id, position);

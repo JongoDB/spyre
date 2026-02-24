@@ -20,6 +20,10 @@
       <h3>Categories</h3>
       <p>Organize templates and community scripts into named categories.</p>
     </a>
+    <a href="/settings/claude" class="settings-card card">
+      <h3>Claude Code</h3>
+      <p>Manage Claude Code authentication, view auth logs, and configure AI settings.</p>
+    </a>
   </div>
 </div>
 

@@ -38,6 +38,28 @@ function applyMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE templates ADD COLUMN category_id TEXT');
   }
 
+  // Phase 4: Claude Code integration tables
+  const phase4Tables = ['claude_progress', 'claude_git_activity', 'claude_task_queue'];
+  for (const table of phase4Tables) {
+    const exists = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+    ).get(table);
+    if (!exists) {
+      const schemaPath = resolve(process.cwd(), 'schema.sql');
+      if (existsSync(schemaPath)) {
+        const schema = readFileSync(schemaPath, 'utf-8');
+        db.exec(schema);
+      }
+      break;
+    }
+  }
+
+  // Add output column to claude_tasks if missing
+  const taskCols = db.pragma('table_info(claude_tasks)') as Array<{ name: string }>;
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'output')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN output TEXT');
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

@@ -3,6 +3,8 @@ import type { PageServerLoad } from './$types';
 import { getEnvironment } from '$lib/server/environments';
 import { discoverLxcIp } from '$lib/server/proxmox';
 import { getDb } from '$lib/server/db';
+import { getActiveTaskForEnv, listTasks } from '$lib/server/claude-bridge';
+import { getProgressForEnv, getGitActivityForEnv } from '$lib/server/claude-poller';
 
 export const load: PageServerLoad = async ({ params }) => {
   let env = getEnvironment(params.id);
@@ -34,8 +36,27 @@ export const load: PageServerLoad = async ({ params }) => {
     }
   }
 
+  // Claude data
+  const activeTask = getActiveTaskForEnv(params.id);
+  const taskHistory = listTasks({ envId: params.id, limit: 20 });
+  const progress = getProgressForEnv(params.id);
+  const gitActivity = getGitActivityForEnv(params.id);
+
+  // Queue items
+  const db = getDb();
+  const queueItems = db.prepare(
+    "SELECT * FROM claude_task_queue WHERE env_id = ? AND status = 'queued' ORDER BY position ASC"
+  ).all(params.id);
+
   return {
     environment: env,
-    metadata
+    metadata,
+    claude: {
+      activeTask,
+      taskHistory,
+      progress,
+      gitActivity,
+      queueItems
+    }
   };
 };

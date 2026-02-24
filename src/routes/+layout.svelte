@@ -25,6 +25,12 @@
 			]
 		},
 		{
+			label: 'AI',
+			items: [
+				{ href: '/claude/tasks', label: 'Claude Tasks', icon: 'claude' }
+			]
+		},
+		{
 			label: 'BUILD',
 			items: [
 				{ href: '/configs', label: 'Configs', icon: 'configs' },
@@ -98,6 +104,12 @@
 		<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
 			<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+		</svg>
+	{:else if icon === 'claude'}
+		<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M12 2a4 4 0 0 1 4 4v1a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z" />
+			<path d="M6.5 11a3.5 3.5 0 0 0 0 7h11a3.5 3.5 0 0 0 0-7" />
+			<path d="M8 14v4" /><path d="M12 14v4" /><path d="M16 14v4" />
 		</svg>
 	{:else if icon === 'settings'}
 		<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

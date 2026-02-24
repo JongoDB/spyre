@@ -2,6 +2,8 @@ import type { PageServerLoad } from './$types';
 import { listEnvironments } from '$lib/server/environments';
 import { authenticate } from '$lib/server/proxmox';
 import { getEnvConfig } from '$lib/server/env-config';
+import { getState } from '$lib/server/claude-auth';
+import { listTasks } from '$lib/server/claude-bridge';
 
 export const load: PageServerLoad = async () => {
 	const environments = listEnvironments();
@@ -26,10 +28,15 @@ export const load: PageServerLoad = async () => {
 		proxmoxConnected = false;
 	}
 
+	const claudeAuthState = getState();
+	const activeTasks = listTasks({ status: 'running', limit: 10 });
+
 	return {
 		counts,
 		proxmoxConnected,
 		proxmoxHost,
-		recentEnvironments: environments.slice(0, 5)
+		recentEnvironments: environments.slice(0, 5),
+		claudeAuthState,
+		activeTasks
 	};
 };

@@ -2,8 +2,14 @@
 	import { onMount, onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 	import type { Environment } from '$lib/types/environment';
+	import type { ClaudeProgress, ClaudeGitActivity, ClaudeTask, ClaudeTaskQueueItem, ClaudeEnvironmentLiveData } from '$lib/types/claude';
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
 	import ResourceBar from '$lib/components/ResourceBar.svelte';
+	import ClaudeDispatch from '$lib/components/ClaudeDispatch.svelte';
+	import ClaudeProgressComponent from '$lib/components/ClaudeProgress.svelte';
+	import ClaudeGitActivityComponent from '$lib/components/ClaudeGitActivity.svelte';
+	import ClaudeTaskHistory from '$lib/components/ClaudeTaskHistory.svelte';
+	import ClaudeTaskQueue from '$lib/components/ClaudeTaskQueue.svelte';
 	import { addToast } from '$lib/stores/toast.svelte';
 
 	interface ResourceMetrics {
@@ -42,6 +48,45 @@
 	let resources = $state<ResourceMetrics | null>(null);
 	let health = $state<HealthStatus | null>(null);
 
+	// Claude state
+	let claudeProgress = $state<ClaudeProgress | null>(data.claude?.progress ?? null);
+	let claudeGitActivity = $state<ClaudeGitActivity | null>(data.claude?.gitActivity ?? null);
+	let claudeActiveTask = $state<ClaudeTask | null>(data.claude?.activeTask ?? null);
+	let claudeTaskHistory = $state<ClaudeTask[]>(data.claude?.taskHistory ?? []);
+	let claudeQueueItems = $state<ClaudeTaskQueueItem[]>((data.claude?.queueItems ?? []) as ClaudeTaskQueueItem[]);
+	let activeTab = $state<'terminal' | 'claude'>('terminal');
+
+	// Claude SSE
+	let claudeEventSource: EventSource | null = null;
+
+	function connectClaudeSSE() {
+		claudeEventSource = new EventSource('/api/claude/stream');
+		claudeEventSource.onmessage = (event) => {
+			try {
+				const liveData: ClaudeEnvironmentLiveData[] = JSON.parse(event.data);
+				const mine = liveData.find(d => d.envId === env.id);
+				if (mine) {
+					if (mine.progress) claudeProgress = mine.progress;
+					if (mine.gitActivity) claudeGitActivity = mine.gitActivity;
+					if (mine.activeTask) claudeActiveTask = mine.activeTask;
+				}
+			} catch {
+				// ignore
+			}
+		};
+	}
+
+	async function refreshClaudeData() {
+		try {
+			const res = await fetch(`/api/claude/tasks?envId=${env.id}&limit=20`);
+			if (res.ok) claudeTaskHistory = await res.json();
+		} catch { /* ignore */ }
+		try {
+			const res = await fetch(`/api/claude/queue/${env.id}`);
+			if (res.ok) claudeQueueItems = await res.json();
+		} catch { /* ignore */ }
+	}
+
 	const rootPassword = $derived(
 		metadata?.root_password ? String(metadata.root_password) : null
 	);
@@ -77,11 +122,14 @@
 
 	onMount(() => {
 		connectSSE();
+		connectClaudeSSE();
 	});
 
 	onDestroy(() => {
 		eventSource?.close();
 		eventSource = null;
+		claudeEventSource?.close();
+		claudeEventSource = null;
 	});
 
 	async function performAction(action: 'start' | 'stop') {
@@ -280,10 +328,56 @@
 		{/if}
 	</div>
 
-	<!-- Terminal -->
+	<!-- Tab switcher for running environments -->
 	{#if env.status === 'running' && env.ip_address}
+		<div class="tab-switcher">
+			<button class="tab-btn" class:active={activeTab === 'terminal'} onclick={() => activeTab = 'terminal'}>Terminal</button>
+			<button class="tab-btn" class:active={activeTab === 'claude'} onclick={() => activeTab = 'claude'}>Claude</button>
+		</div>
+	{/if}
+
+	<!-- Terminal -->
+	{#if env.status === 'running' && env.ip_address && activeTab === 'terminal'}
 		<div class="terminal-section">
 			<TerminalTabs envId={env.id} />
+		</div>
+	{:else if env.status === 'running' && env.ip_address && activeTab === 'claude'}
+		<div class="claude-section">
+			<!-- Dispatch -->
+			<div class="claude-card card">
+				<h3>Dispatch Task</h3>
+				<ClaudeDispatch
+					envId={env.id}
+					activeTask={claudeActiveTask}
+					onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
+				/>
+			</div>
+
+			<div class="claude-grid">
+				<!-- Progress -->
+				<div class="claude-card card">
+					<h3>Progress</h3>
+					<ClaudeProgressComponent progress={claudeProgress} />
+				</div>
+
+				<!-- Git Activity -->
+				<div class="claude-card card">
+					<h3>Git Activity</h3>
+					<ClaudeGitActivityComponent activity={claudeGitActivity} />
+				</div>
+			</div>
+
+			<!-- Task Queue -->
+			<div class="claude-card card">
+				<h3>Task Queue</h3>
+				<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
+			</div>
+
+			<!-- Task History -->
+			<div class="claude-card card">
+				<h3>Task History</h3>
+				<ClaudeTaskHistory tasks={claudeTaskHistory} />
+			</div>
 		</div>
 	{:else if env.status === 'running' && !env.ip_address}
 		<div class="terminal-placeholder card">
@@ -512,6 +606,78 @@
 		font-size: 0.6875rem;
 		color: var(--text-secondary);
 		font-family: 'SF Mono', 'Fira Code', monospace;
+	}
+
+	/* ---- Tab switcher ---- */
+
+	.tab-switcher {
+		display: flex;
+		gap: 2px;
+		margin-bottom: 8px;
+		flex-shrink: 0;
+	}
+
+	.tab-btn {
+		padding: 6px 16px;
+		font-size: 0.8125rem;
+		font-weight: 500;
+		background: none;
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: background-color var(--transition), color var(--transition), border-color var(--transition);
+	}
+
+	.tab-btn:first-child {
+		border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+	}
+
+	.tab-btn:last-child {
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+	}
+
+	.tab-btn.active {
+		background-color: rgba(99, 102, 241, 0.1);
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.tab-btn:hover:not(.active) {
+		background-color: rgba(255, 255, 255, 0.04);
+		color: var(--text-primary);
+	}
+
+	/* ---- Claude section ---- */
+
+	.claude-section {
+		flex: 1;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		padding-bottom: 24px;
+	}
+
+	.claude-card {
+		padding: 16px 20px;
+	}
+
+	.claude-card h3 {
+		font-size: 0.875rem;
+		font-weight: 600;
+		margin-bottom: 12px;
+	}
+
+	.claude-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 16px;
+	}
+
+	@media (max-width: 900px) {
+		.claude-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	/* ---- Terminal section ---- */

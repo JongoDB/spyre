@@ -11,8 +11,9 @@
 		canvas.width = size;
 		canvas.height = size;
 
-		const ctx = canvas.getContext('2d');
-		if (!ctx) return;
+		const maybeCtx = canvas.getContext('2d');
+		if (!maybeCtx) return;
+		const ctx = maybeCtx;
 
 		ctx.scale(dpr, dpr);
 
