@@ -11,6 +11,9 @@
 	let configName = $state(data.name);
 	let saving = $state(false);
 	let importing = $state(false);
+	let provisioning = $state(false);
+	let showProvisionForm = $state(false);
+	let envName = $state('');
 	let statusMessage = $state('');
 	let statusType = $state<'success' | 'error' | ''>('');
 	let validationErrors = $state<ConfigValidationError[]>([]);
@@ -134,6 +137,59 @@
 		}
 	}
 
+	function handleProvisionClick() {
+		// Pre-fill environment name from preview metadata
+		const meta = preview as Record<string, unknown> | null;
+		const metaInner = meta?.metadata as Record<string, unknown> | undefined;
+		envName = (metaInner?.name as string) ?? configName;
+		showProvisionForm = true;
+	}
+
+	async function handleProvision() {
+		if (!configName.trim()) {
+			statusMessage = 'Save the config first before provisioning.';
+			statusType = 'error';
+			return;
+		}
+
+		if (!envName.trim()) {
+			statusMessage = 'Please enter an environment name.';
+			statusType = 'error';
+			return;
+		}
+
+		// Save first, then provision
+		await handleSave();
+		if (statusType === 'error') return;
+
+		provisioning = true;
+		statusMessage = '';
+		showProvisionForm = false;
+
+		try {
+			const res = await fetch(`/api/configs/${encodeURIComponent(configName)}/provision`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: envName.trim() }),
+			});
+
+			if (res.ok) {
+				const env = await res.json();
+				statusMessage = `Environment "${env.name}" created (status: ${env.status}).`;
+				statusType = 'success';
+			} else {
+				const body = await res.json().catch(() => ({}));
+				statusMessage = body.message ?? `Provision failed (HTTP ${res.status}).`;
+				statusType = 'error';
+			}
+		} catch {
+			statusMessage = 'Network error.';
+			statusType = 'error';
+		} finally {
+			provisioning = false;
+		}
+	}
+
 	// Initial validation on mount
 	onMount(() => {
 		validateContent(content);
@@ -174,7 +230,7 @@
 				<button
 					type="button"
 					class="btn btn-secondary"
-					disabled={saving || importing}
+					disabled={saving || importing || provisioning}
 					onclick={handleSave}
 					title="Save YAML file to configs/ directory on disk"
 				>
@@ -183,11 +239,27 @@
 				<button
 					type="button"
 					class="btn btn-primary"
-					disabled={saving || importing || validationErrors.length > 0}
+					disabled={saving || importing || provisioning || validationErrors.length > 0}
 					onclick={handleImport}
 					title="Create a Spyre template from this config (saves first, then imports)"
 				>
 					{importing ? 'Importing...' : 'Import as Template'}
+				</button>
+				<button
+					type="button"
+					class="btn btn-accent"
+					disabled={saving || importing || provisioning || validationErrors.length > 0}
+					onclick={handleProvisionClick}
+					title="Create an environment directly from this config (saves first, then provisions)"
+				>
+					{#if provisioning}
+						Provisioning...
+					{:else}
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<polygon points="5 3 19 12 5 21 5 3" />
+						</svg>
+						Provision
+					{/if}
 				</button>
 			</div>
 		</div>
@@ -196,6 +268,34 @@
 	{#if statusMessage}
 		<div class="status-bar" class:success={statusType === 'success'} class:error={statusType === 'error'}>
 			{statusMessage}
+		</div>
+	{/if}
+
+	{#if showProvisionForm}
+		<div class="provision-form">
+			<span class="provision-form-label">Environment Name:</span>
+			<input
+				type="text"
+				class="form-input provision-name-input"
+				bind:value={envName}
+				placeholder="e.g., my-dev-environment"
+				onkeydown={(e) => { if (e.key === 'Enter') handleProvision(); if (e.key === 'Escape') showProvisionForm = false; }}
+			/>
+			<button
+				type="button"
+				class="btn btn-accent btn-sm"
+				disabled={!envName.trim() || provisioning}
+				onclick={handleProvision}
+			>
+				{provisioning ? 'Creating...' : 'Create Environment'}
+			</button>
+			<button
+				type="button"
+				class="btn btn-secondary btn-sm"
+				onclick={() => showProvisionForm = false}
+			>
+				Cancel
+			</button>
 		</div>
 	{/if}
 
@@ -640,6 +740,42 @@
 	.error-msg { font-size: 0.75rem; color: var(--error); }
 	.warning-msg { font-size: 0.75rem; color: #fbbf24; }
 	.error-line { font-size: 0.625rem; color: var(--text-secondary); }
+
+	/* ---- Provision ---- */
+
+	.btn-accent {
+		background-color: #22c55e;
+		color: #fff;
+		border-color: #22c55e;
+	}
+
+	.btn-accent:hover:not(:disabled) {
+		background-color: #16a34a;
+		border-color: #16a34a;
+	}
+
+	.provision-form {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px 14px;
+		background-color: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		margin-bottom: 12px;
+		flex-shrink: 0;
+	}
+
+	.provision-form-label {
+		font-size: 0.8125rem;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+
+	.provision-name-input {
+		min-width: 240px;
+		flex: 1;
+	}
 
 	@media (max-width: 768px) {
 		.editor-layout {
