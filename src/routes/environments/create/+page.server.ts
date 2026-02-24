@@ -42,6 +42,10 @@ export const load: PageServerLoad = async ({ url }) => {
 	// YAML configs for "From Config" tab
 	const yamlConfigs = listConfigs().filter(c => c.kind === 'Environment');
 
+	// Support preselecting a config from URL params
+	const preselectedConfig = url.searchParams.get('config') ?? '';
+	const preselectedTab = url.searchParams.get('tab') ?? '';
+
 	return {
 		templates: osTemplates,
 		storageList,
@@ -50,6 +54,8 @@ export const load: PageServerLoad = async ({ url }) => {
 		spyreTemplates,
 		communityScripts: communityResult.scripts,
 		communityQuery: communityQuery ?? '',
-		yamlConfigs
+		yamlConfigs,
+		preselectedConfig,
+		preselectedTab
 	};
 };

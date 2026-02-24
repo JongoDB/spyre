@@ -2,6 +2,7 @@ import { getEnvConfig } from './env-config';
 import { listEnvironments, syncEnvironmentStatuses } from './environments';
 import * as proxmox from './proxmox';
 import { getConnection } from './ssh-pool';
+import { getProvisioningProgress } from './provisioning-log';
 import type { Environment } from '$lib/types/environment';
 import type { ProxmoxLxc } from '$lib/types/proxmox';
 
@@ -22,12 +23,19 @@ export interface HealthStatus {
 	lastChecked: string;
 }
 
+export interface ProvisioningLiveData {
+	currentPhase: string | null;
+	percentComplete: number;
+	hasError: boolean;
+}
+
 export interface EnvironmentLiveData {
 	id: string;
 	status: string;
 	ipAddress: string | null;
 	resources: ResourceMetrics | null;
 	health: HealthStatus | null;
+	provisioning: ProvisioningLiveData | null;
 }
 
 type Subscriber = (data: EnvironmentLiveData[]) => void;
@@ -138,13 +146,25 @@ async function poll(): Promise<void> {
 		lastData = environments.map((env: Environment): EnvironmentLiveData => {
 			const lxc = env.vmid ? lxcByVmid.get(env.vmid) : undefined;
 			const isRunning = env.status === 'running';
+			const isProvisioning = env.status === 'provisioning';
+
+			let provisioning: ProvisioningLiveData | null = null;
+			if (isProvisioning) {
+				const progress = getProvisioningProgress(env.id);
+				provisioning = {
+					currentPhase: progress.currentPhase,
+					percentComplete: progress.percentComplete,
+					hasError: progress.hasError
+				};
+			}
 
 			return {
 				id: env.id,
 				status: env.status,
 				ipAddress: env.ip_address,
 				resources: isRunning && lxc ? lxcToMetrics(lxc) : null,
-				health: isRunning ? (healthMap.get(env.id) ?? null) : null
+				health: isRunning ? (healthMap.get(env.id) ?? null) : null,
+				provisioning
 			};
 		});
 

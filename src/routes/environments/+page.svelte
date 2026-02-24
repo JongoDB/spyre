@@ -4,6 +4,7 @@
 	import type { Environment } from '$lib/types/environment';
 	import { addToast } from '$lib/stores/toast.svelte';
 	import ResourceBar from '$lib/components/ResourceBar.svelte';
+	import ProvisioningProgressCompact from '$lib/components/ProvisioningProgressCompact.svelte';
 
 	interface ResourceMetrics {
 		cpuPercent: number;
@@ -22,12 +23,19 @@
 		lastChecked: string;
 	}
 
+	interface ProvisioningLiveData {
+		currentPhase: string | null;
+		percentComplete: number;
+		hasError: boolean;
+	}
+
 	interface EnvironmentLiveData {
 		id: string;
 		status: string;
 		ipAddress: string | null;
 		resources: ResourceMetrics | null;
 		health: HealthStatus | null;
+		provisioning: ProvisioningLiveData | null;
 	}
 
 	let { data }: { data: PageData } = $props();
@@ -39,6 +47,8 @@
 	// Live data maps
 	let resourceMap = $state<Map<string, ResourceMetrics>>(new Map());
 	let healthMap = $state<Map<string, HealthStatus>>(new Map());
+	let provisioningMap = $state<Map<string, ProvisioningLiveData>>(new Map());
+	let previousStatuses = $state<Map<string, string>>(new Map(data.environments.map(e => [e.id, e.status])));
 
 	// Bulk selection
 	let selectedIds = $state<Set<string>>(new Set());
@@ -71,11 +81,22 @@
 				const liveData: EnvironmentLiveData[] = JSON.parse(event.data);
 				const newResourceMap = new Map<string, ResourceMetrics>();
 				const newHealthMap = new Map<string, HealthStatus>();
+				const newProvisioningMap = new Map<string, ProvisioningLiveData>();
 
 				for (const item of liveData) {
 					// Update environment status from live data
 					const env = environments.find((e) => e.id === item.id);
 					if (env && env.status !== item.status) {
+						// Toast when provisioning completes
+						const prev = previousStatuses.get(item.id);
+						if (prev === 'provisioning' && item.status !== 'provisioning') {
+							if (item.status === 'running') {
+								addToast(`"${env.name}" is ready!`, 'success');
+							} else if (item.status === 'error') {
+								addToast(`"${env.name}" provisioning failed.`, 'error');
+							}
+						}
+						previousStatuses.set(item.id, item.status);
 						env.status = item.status as Environment['status'];
 					}
 					if (env && item.ipAddress && !env.ip_address) {
@@ -87,12 +108,16 @@
 					if (item.health) {
 						newHealthMap.set(item.id, item.health);
 					}
+					if (item.provisioning) {
+						newProvisioningMap.set(item.id, item.provisioning);
+					}
 				}
 
 				// Reassign to trigger reactivity
 				environments = [...environments];
 				resourceMap = newResourceMap;
 				healthMap = newHealthMap;
+				provisioningMap = newProvisioningMap;
 			} catch {
 				// Ignore parse errors
 			}
@@ -134,11 +159,18 @@
 
 			addToast(`Environment ${action === 'delete' ? 'deleted' : action === 'start' ? 'started' : 'stopped'} successfully.`, 'success');
 
-			// Refresh list if deleted
 			if (action === 'delete') {
 				environments = environments.filter((e) => e.id !== envId);
 				selectedIds.delete(envId);
 				selectedIds = new Set(selectedIds);
+			} else {
+				// Immediately update the local environment status so the UI
+				// reflects the change without waiting for the next SSE poll (30s)
+				const env = environments.find((e) => e.id === envId);
+				if (env) {
+					env.status = action === 'start' ? 'running' : 'stopped';
+					environments = [...environments];
+				}
 			}
 		} catch {
 			addToast(`Network error while trying to ${action} environment.`, 'error');
@@ -196,10 +228,19 @@
 					addToast(`${failed.length} failed: ${failed[0].error ?? 'Unknown error'}${failed.length > 1 ? ` (+${failed.length - 1} more)` : ''}`, 'error');
 				}
 
-				// Remove destroyed environments from local state
+				// Update local state immediately so UI reflects changes
 				if (action === 'destroy') {
 					const destroyedIds = new Set(results.filter((r) => r.success).map((r) => r.id));
 					environments = environments.filter((e) => !destroyedIds.has(e.id));
+				} else {
+					const successIds = new Set(results.filter((r) => r.success).map((r) => r.id));
+					const newStatus = action === 'start' ? 'running' : 'stopped';
+					for (const env of environments) {
+						if (successIds.has(env.id)) {
+							env.status = newStatus as Environment['status'];
+						}
+					}
+					environments = [...environments];
 				}
 
 				selectedIds = new Set();
@@ -349,6 +390,18 @@
 							<span class="detail-value">{env.node}</span>
 						</div>
 					</div>
+
+					<!-- Provisioning progress for provisioning environments -->
+					{#if env.status === 'provisioning'}
+						{@const prov = provisioningMap.get(env.id)}
+						<div class="env-provisioning">
+							<ProvisioningProgressCompact
+								percentComplete={prov?.percentComplete ?? 0}
+								currentPhase={prov?.currentPhase ?? null}
+								hasError={prov?.hasError ?? false}
+							/>
+						</div>
+					{/if}
 
 					<!-- Resource bars for running environments -->
 					{#if resources}
@@ -680,6 +733,12 @@
 
 	.port-link:hover {
 		background-color: rgba(99, 102, 241, 0.2);
+	}
+
+	/* ---- Provisioning ---- */
+
+	.env-provisioning {
+		padding-top: 4px;
 	}
 
 	/* ---- Resources ---- */

@@ -5,6 +5,7 @@ import { discoverLxcIp } from '$lib/server/proxmox';
 import { getDb } from '$lib/server/db';
 import { getActiveTaskForEnv, listTasks } from '$lib/server/claude-bridge';
 import { getProgressForEnv, getGitActivityForEnv } from '$lib/server/claude-poller';
+import { getProvisioningProgress } from '$lib/server/provisioning-log';
 
 export const load: PageServerLoad = async ({ params }) => {
   let env = getEnvironment(params.id);
@@ -48,9 +49,16 @@ export const load: PageServerLoad = async ({ params }) => {
     "SELECT * FROM claude_task_queue WHERE env_id = ? AND status = 'queued' ORDER BY position ASC"
   ).all(params.id);
 
+  // Provisioning progress — show for provisioning AND error states
+  // (error may occur mid-provisioning, log shows what happened)
+  const provisioningProgress = (env.status === 'provisioning' || env.status === 'error')
+    ? getProvisioningProgress(params.id)
+    : null;
+
   return {
     environment: env,
     metadata,
+    provisioningProgress,
     claude: {
       activeTask,
       taskHistory,

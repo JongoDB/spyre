@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
 CREATE TABLE IF NOT EXISTS provisioning_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
-    phase           TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script')),
+    phase           TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script', 'complete', 'error')),
     step            TEXT NOT NULL,                           -- human-readable step name
     status          TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'skipped')),
     output          TEXT,                                    -- command output (stdout + stderr)
@@ -388,16 +388,11 @@ INSERT OR IGNORE INTO network_profiles (id, name, description, bridge, ip_mode, 
 
 -- Seed Data — Community-scripts categories (from metadata.json)
 -- =============================================================================
--- Migration: Add enhanced fields to software_pool_items
+-- NOTE: The software_pool_items columns (package_manager, interpreter, source_url,
+-- file_mode, file_owner, condition) are now defined in the CREATE TABLE above.
+-- Legacy ALTER TABLE statements have been removed to prevent "duplicate column"
+-- errors when schema.sql is re-executed for migrations.
 -- =============================================================================
--- These ALTER TABLE statements are safe to re-run; SQLite will error silently
--- if the column already exists. Wrapped in a check pattern for safety.
-ALTER TABLE software_pool_items ADD COLUMN package_manager TEXT CHECK (package_manager IS NULL OR package_manager IN ('auto', 'apt', 'apk', 'dnf', 'yum'));
-ALTER TABLE software_pool_items ADD COLUMN interpreter TEXT CHECK (interpreter IS NULL OR interpreter IN ('bash', 'sh', 'python3', 'node', 'ruby', 'perl'));
-ALTER TABLE software_pool_items ADD COLUMN source_url TEXT;
-ALTER TABLE software_pool_items ADD COLUMN file_mode TEXT;
-ALTER TABLE software_pool_items ADD COLUMN file_owner TEXT;
-ALTER TABLE software_pool_items ADD COLUMN condition TEXT;
 
 INSERT OR IGNORE INTO categories (id, name, description, icon, sort_order) VALUES
     ('cat-0',  'Miscellaneous',              'General scripts and tools',                              'more-horizontal', 99),
@@ -461,3 +456,71 @@ CREATE TABLE IF NOT EXISTS claude_task_queue (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_queue_env ON claude_task_queue(env_id, position);
+
+-- =============================================================================
+-- Software Repo — Flat software catalog (replaces grouped software pools)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS software_repo (
+    id              TEXT PRIMARY KEY,                        -- UUID v4
+    name            TEXT UNIQUE NOT NULL,                    -- e.g. "git", "Node.js", "Docker"
+    description     TEXT,
+    logo_url        TEXT,
+    os_families     TEXT NOT NULL DEFAULT 'apt',             -- comma-separated: apt,apk,dnf,yum
+    tags            TEXT,                                    -- comma-separated for filtering
+    is_builtin      INTEGER NOT NULL DEFAULT 0,             -- 1 = shipped with Spyre, not deletable
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Software Repo Instructions — Per-OS install instructions for each entry
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS software_repo_instructions (
+    id              TEXT PRIMARY KEY,                        -- UUID v4
+    software_id     TEXT NOT NULL REFERENCES software_repo(id) ON DELETE CASCADE,
+    os_family       TEXT NOT NULL CHECK (os_family IN ('apt', 'apk', 'dnf', 'yum', 'any')),
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    item_type       TEXT NOT NULL CHECK (item_type IN ('package', 'script', 'file')),
+    content         TEXT NOT NULL,
+    destination     TEXT,
+    label           TEXT,
+    post_command    TEXT,
+    package_manager TEXT CHECK (package_manager IS NULL OR package_manager IN ('auto', 'apt', 'apk', 'dnf', 'yum')),
+    interpreter     TEXT CHECK (interpreter IS NULL OR interpreter IN ('bash', 'sh', 'python3', 'node', 'ruby', 'perl')),
+    source_url      TEXT,
+    file_mode       TEXT,
+    file_owner      TEXT,
+    condition       TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_software_repo_instructions_sw ON software_repo_instructions(software_id, sort_order);
+
+-- =============================================================================
+-- Template Software — Junction table for templates using software repo entries
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS template_software (
+    template_id     TEXT NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+    software_id     TEXT NOT NULL REFERENCES software_repo(id) ON DELETE CASCADE,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (template_id, software_id)
+);
+
+-- =============================================================================
+-- Config Index — DB cache of filesystem YAML configs
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS config_index (
+    name            TEXT PRIMARY KEY,                        -- path relative to configs/ without .yaml
+    kind            TEXT,
+    description     TEXT,
+    extends_name    TEXT,
+    os_type         TEXT,
+    os_template     TEXT,
+    labels          TEXT,                                    -- JSON
+    software_ids    TEXT,                                    -- JSON array of software repo IDs
+    has_services    INTEGER NOT NULL DEFAULT 0,
+    has_claude      INTEGER NOT NULL DEFAULT 0,
+    content_hash    TEXT,                                    -- SHA256 for change detection
+    modified_at     TEXT,
+    indexed_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);

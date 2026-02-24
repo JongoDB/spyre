@@ -4,8 +4,11 @@
 
 	let { data }: { data: PageData } = $props();
 
-	// Tab state
-	let activeTab = $state<'template' | 'quick' | 'community' | 'config'>('template');
+	// Tab state — config is now the primary tab
+	const initialTab = data.preselectedTab === 'config' || data.preselectedTab === 'quick' || data.preselectedTab === 'community' || data.preselectedTab === 'template'
+		? data.preselectedTab as 'config' | 'quick' | 'community' | 'template'
+		: 'config';
+	let activeTab = $state<'config' | 'quick' | 'community' | 'template'>(initialTab);
 
 	// Shared state
 	let name = $state('');
@@ -53,9 +56,16 @@
 	);
 
 	// ── From Config tab ──
-	let selectedConfigName = $state('');
+	let selectedConfigName = $state(data.preselectedConfig ?? '');
 	let configPreview = $state<Record<string, unknown> | null>(null);
 	let configLoading = $state(false);
+
+	// Auto-load preview if config was preselected
+	$effect(() => {
+		if (selectedConfigName && !configPreview && !configLoading) {
+			loadConfigPreview(selectedConfigName);
+		}
+	});
 
 	let configIsValid = $derived(
 		name.trim().length > 0 && selectedConfigName.length > 0 && configPreview !== null
@@ -131,7 +141,8 @@
 				return;
 			}
 
-			await goto('/environments');
+			const env = await res.json();
+			await goto(`/environments/${env.id}`);
 		} catch {
 			errorMessage = 'Network error. Please check your connection and try again.';
 		} finally {
@@ -172,7 +183,8 @@
 				return;
 			}
 
-			await goto('/environments');
+			const env = await res.json();
+			await goto(`/environments/${env.id}`);
 		} catch {
 			errorMessage = 'Network error. Please check your connection and try again.';
 		} finally {
@@ -218,7 +230,8 @@
 				return;
 			}
 
-			await goto('/environments');
+			const env = await res.json();
+			await goto(`/environments/${env.id}`);
 		} catch {
 			errorMessage = 'Network error. Please check your connection and try again.';
 		} finally {
@@ -234,48 +247,12 @@
 		errorMessage = '';
 
 		try {
-			// Import the config as a template first
-			const importRes = await fetch(`/api/configs/${encodeURIComponent(selectedConfigName)}/import`, {
-				method: 'POST'
-			});
-
-			if (!importRes.ok) {
-				const body = await importRes.json().catch(() => ({}));
-				errorMessage = body.message ?? 'Failed to import config as template.';
-				return;
-			}
-
-			const template = await importRes.json();
-
-			// Resolve the newly-created template
-			const resolveRes = await fetch(`/api/templates/${template.id}/resolve`);
-			if (!resolveRes.ok) {
-				errorMessage = 'Failed to resolve imported template.';
-				return;
-			}
-
-			const resolved = await resolveRes.json();
-
-			// Create environment using the resolved template
-			const res = await fetch('/api/environments', {
+			// Use /api/configs/:name/create-env to create environment directly from config
+			const res = await fetch(`/api/configs/${encodeURIComponent(selectedConfigName)}/create-env`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					name: name.trim(),
-					type: resolved.type,
-					template: resolved.os_template,
-					cores: resolved.cores,
-					memory: resolved.memory,
-					disk: resolved.disk,
-					nameserver: resolved.dns,
-					unprivileged: resolved.unprivileged,
-					nesting: resolved.nesting,
-					ssh_enabled: resolved.ssh_enabled,
-					password: resolved.root_password || undefined,
-					template_id: template.id,
-					default_user: resolved.default_user || undefined,
-					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
-					custom_script: resolved.custom_script || undefined,
 					install_claude: installClaude
 				})
 			});
@@ -286,7 +263,8 @@
 				return;
 			}
 
-			await goto('/environments');
+			const env = await res.json();
+			await goto(`/environments/${env.id}`);
 		} catch {
 			errorMessage = 'Network error. Please check your connection and try again.';
 		} finally {
@@ -339,15 +317,16 @@
 		<button
 			type="button"
 			class="tab"
-			class:active={activeTab === 'template'}
-			onclick={() => activeTab = 'template'}
+			class:active={activeTab === 'config'}
+			onclick={() => activeTab = 'config'}
 		>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<rect x="3" y="3" width="18" height="18" rx="2" />
-				<path d="M3 9h18" />
-				<path d="M9 21V9" />
+				<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+				<polyline points="14 2 14 8 20 8" />
+				<line x1="16" y1="13" x2="8" y2="13" />
+				<line x1="16" y1="17" x2="8" y2="17" />
 			</svg>
-			From Template
+			From Config
 		</button>
 		<button
 			type="button"
@@ -375,16 +354,15 @@
 		<button
 			type="button"
 			class="tab"
-			class:active={activeTab === 'config'}
-			onclick={() => activeTab = 'config'}
+			class:active={activeTab === 'template'}
+			onclick={() => activeTab = 'template'}
 		>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-				<polyline points="14 2 14 8 20 8" />
-				<line x1="16" y1="13" x2="8" y2="13" />
-				<line x1="16" y1="17" x2="8" y2="17" />
+				<rect x="3" y="3" width="18" height="18" rx="2" />
+				<path d="M3 9h18" />
+				<path d="M9 21V9" />
 			</svg>
-			From Config
+			From Template
 		</button>
 	</div>
 
@@ -777,7 +755,7 @@
 					</select>
 				{:else}
 					<p class="empty-hint">
-						No YAML configs found. <a href="/configs/editor">Create a config</a> first, or add <code>.yaml</code> files to the <code>configs/</code> directory.
+						No YAML configs found. <a href="/configs/new">Create a config</a> first, or add <code>.yaml</code> files to the <code>configs/</code> directory.
 					</p>
 				{/if}
 			</div>

@@ -5,6 +5,7 @@
 	import type { ClaudeProgress, ClaudeGitActivity, ClaudeTask, ClaudeTaskQueueItem, ClaudeEnvironmentLiveData } from '$lib/types/claude';
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
 	import ResourceBar from '$lib/components/ResourceBar.svelte';
+	import ProvisioningProgressComponent from '$lib/components/ProvisioningProgress.svelte';
 	import ClaudeDispatch from '$lib/components/ClaudeDispatch.svelte';
 	import ClaudeProgressComponent from '$lib/components/ClaudeProgress.svelte';
 	import ClaudeGitActivityComponent from '$lib/components/ClaudeGitActivity.svelte';
@@ -29,12 +30,19 @@
 		lastChecked: string;
 	}
 
+	interface ProvisioningLiveData {
+		currentPhase: string | null;
+		percentComplete: number;
+		hasError: boolean;
+	}
+
 	interface EnvironmentLiveData {
 		id: string;
 		status: string;
 		ipAddress: string | null;
 		resources: ResourceMetrics | null;
 		health: HealthStatus | null;
+		provisioning: ProvisioningLiveData | null;
 	}
 
 	let { data }: { data: PageData } = $props();
@@ -47,6 +55,26 @@
 
 	let resources = $state<ResourceMetrics | null>(null);
 	let health = $state<HealthStatus | null>(null);
+	let provisioningProgress = $state<{
+		phases: Array<{
+			phase: string;
+			steps: Array<{
+				id: number;
+				phase: string;
+				step: string;
+				status: 'running' | 'success' | 'error' | 'skipped';
+				output: string | null;
+				started_at: string;
+				completed_at: string | null;
+			}>;
+			status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
+		}>;
+		percentComplete: number;
+		currentPhase: string | null;
+		isComplete: boolean;
+		hasError: boolean;
+	} | null>(data.provisioningProgress ?? null);
+	let previousStatus = $state(env.status);
 
 	// Claude state
 	let claudeProgress = $state<ClaudeProgress | null>(data.claude?.progress ?? null);
@@ -106,6 +134,15 @@
 				const mine = liveData.find((d) => d.id === env.id);
 				if (mine) {
 					if (mine.status && env.status !== mine.status) {
+						// Toast on provisioning completion
+						if (previousStatus === 'provisioning' && mine.status !== 'provisioning') {
+							if (mine.status === 'running') {
+								addToast(`Environment "${env.name}" is ready!`, 'success');
+							} else if (mine.status === 'error') {
+								addToast(`Environment "${env.name}" provisioning failed.`, 'error');
+							}
+						}
+						previousStatus = mine.status as Environment['status'];
 						env.status = mine.status as Environment['status'];
 					}
 					if (mine.ipAddress && !env.ip_address) {
@@ -113,16 +150,51 @@
 					}
 					resources = mine.resources;
 					health = mine.health;
+					if (mine.provisioning) {
+						provisioningProgress = {
+							...provisioningProgress!,
+							percentComplete: mine.provisioning.percentComplete,
+							currentPhase: mine.provisioning.currentPhase,
+							hasError: mine.provisioning.hasError
+						};
+					}
 				}
 			} catch {
 				// ignore
 			}
 		};
+		// Listen for real-time provisioning events
+		eventSource.addEventListener('provisioning', (event) => {
+			try {
+				const provEvent = JSON.parse(event.data);
+				if (provEvent.envId === env.id) {
+					// Refresh full provisioning log
+					fetchProvisioningLog();
+				}
+			} catch {
+				// ignore
+			}
+		});
+	}
+
+	async function fetchProvisioningLog() {
+		try {
+			const res = await fetch(`/api/environments/${env.id}/provisioning-log`);
+			if (res.ok) {
+				provisioningProgress = await res.json();
+			}
+		} catch {
+			// ignore
+		}
 	}
 
 	onMount(() => {
 		connectSSE();
 		connectClaudeSSE();
+		// Fetch provisioning log immediately if env is provisioning
+		if (env.status === 'provisioning') {
+			fetchProvisioningLog();
+		}
 	});
 
 	onDestroy(() => {
@@ -388,12 +460,17 @@
 			</div>
 		</div>
 	{:else if env.status === 'provisioning'}
-		<div class="terminal-placeholder card">
-			<div class="placeholder-content">
-				<div class="spinner"></div>
-				<p>Environment is provisioning...</p>
-				<p class="placeholder-sub">Terminal will be available once the environment is running.</p>
-			</div>
+		<div class="provisioning-section card">
+			{#if provisioningProgress && provisioningProgress.phases.length > 0}
+				<h3 class="provisioning-title">Provisioning in Progress</h3>
+				<ProvisioningProgressComponent progress={provisioningProgress} />
+			{:else}
+				<div class="placeholder-content">
+					<div class="spinner"></div>
+					<p>Environment is provisioning...</p>
+					<p class="placeholder-sub">Terminal will be available once the environment is running.</p>
+				</div>
+			{/if}
 		</div>
 	{:else if env.status === 'stopped'}
 		<div class="terminal-placeholder card">
@@ -411,6 +488,12 @@
 				{/if}
 			</div>
 		</div>
+		{#if provisioningProgress && provisioningProgress.phases.length > 0}
+			<div class="provisioning-section card" style="margin-top: 16px">
+				<h3 class="provisioning-title">Provisioning Log</h3>
+				<ProvisioningProgressComponent progress={provisioningProgress} />
+			</div>
+		{/if}
 	{/if}
 </div>
 
@@ -678,6 +761,18 @@
 		.claude-grid {
 			grid-template-columns: 1fr;
 		}
+	}
+
+	/* ---- Provisioning section ---- */
+
+	.provisioning-section {
+		padding: 20px 24px;
+	}
+
+	.provisioning-title {
+		font-size: 0.9375rem;
+		font-weight: 600;
+		margin-bottom: 16px;
 	}
 
 	/* ---- Terminal section ---- */

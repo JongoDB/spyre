@@ -1,9 +1,11 @@
 import type { RequestHandler } from './$types';
 import { subscribe, getLastData } from '$lib/server/status-poller';
+import { subscribeProvisioning } from '$lib/server/provisioning-events';
 import type { EnvironmentLiveData } from '$lib/server/status-poller';
 
 export const GET: RequestHandler = () => {
 	let unsubscribe: (() => void) | null = null;
+	let unsubscribeProvisioning: (() => void) | null = null;
 	let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
 	const stream = new ReadableStream({
@@ -20,6 +22,15 @@ export const GET: RequestHandler = () => {
 					controller.enqueue(`data: ${JSON.stringify(data)}\n\n`);
 				} catch {
 					// Stream closed
+					cleanup();
+				}
+			});
+
+			// Subscribe to provisioning events for real-time updates
+			unsubscribeProvisioning = subscribeProvisioning((provEvent) => {
+				try {
+					controller.enqueue(`event: provisioning\ndata: ${JSON.stringify(provEvent)}\n\n`);
+				} catch {
 					cleanup();
 				}
 			});
@@ -42,6 +53,10 @@ export const GET: RequestHandler = () => {
 					unsubscribe();
 					unsubscribe = null;
 				}
+				if (unsubscribeProvisioning) {
+					unsubscribeProvisioning();
+					unsubscribeProvisioning = null;
+				}
 			}
 		},
 		cancel() {
@@ -52,6 +67,10 @@ export const GET: RequestHandler = () => {
 			if (unsubscribe) {
 				unsubscribe();
 				unsubscribe = null;
+			}
+			if (unsubscribeProvisioning) {
+				unsubscribeProvisioning();
+				unsubscribeProvisioning = null;
 			}
 		}
 	});

@@ -60,6 +60,94 @@ function applyMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE claude_tasks ADD COLUMN output TEXT');
   }
 
+  // v0.9.0: Software repo, config index, template_software tables
+  // Create individually to avoid re-running full schema.sql (which can cause ALTER TABLE conflicts)
+  const v09Exists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='software_repo'"
+  ).get();
+  if (!v09Exists) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS software_repo (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL UNIQUE,
+        description TEXT,
+        logo_url    TEXT,
+        os_families TEXT NOT NULL DEFAULT 'apt',
+        tags        TEXT,
+        is_builtin  INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS software_repo_instructions (
+        id              TEXT PRIMARY KEY,
+        software_id     TEXT NOT NULL REFERENCES software_repo(id) ON DELETE CASCADE,
+        os_family       TEXT NOT NULL DEFAULT 'any' CHECK (os_family IN ('apt','apk','dnf','yum','any')),
+        sort_order      INTEGER NOT NULL DEFAULT 0,
+        item_type       TEXT NOT NULL CHECK (item_type IN ('package','script','file')),
+        content         TEXT NOT NULL,
+        destination     TEXT,
+        label           TEXT,
+        post_command    TEXT,
+        package_manager TEXT,
+        interpreter     TEXT,
+        source_url      TEXT,
+        file_mode       TEXT,
+        file_owner      TEXT,
+        condition       TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_sri_software ON software_repo_instructions(software_id, os_family, sort_order);
+
+      CREATE TABLE IF NOT EXISTS template_software (
+        template_id TEXT NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+        software_id TEXT NOT NULL REFERENCES software_repo(id) ON DELETE CASCADE,
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (template_id, software_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS config_index (
+        name          TEXT PRIMARY KEY,
+        kind          TEXT,
+        description   TEXT,
+        extends_name  TEXT,
+        os_type       TEXT,
+        os_template   TEXT,
+        labels        TEXT,
+        software_ids  TEXT,
+        has_services  INTEGER NOT NULL DEFAULT 0,
+        has_claude    INTEGER NOT NULL DEFAULT 0,
+        content_hash  TEXT,
+        modified_at   TEXT,
+        indexed_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  // v0.9.0: Update provisioning_log.phase CHECK constraint to allow 'complete' and 'error'
+  // SQLite doesn't support ALTER TABLE to change CHECK constraints, so we recreate the table.
+  const provLogCheck = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='provisioning_log'"
+  ).get() as { sql: string } | undefined;
+  if (provLogCheck && !provLogCheck.sql.includes("'complete'")) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS provisioning_log_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_id      TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        phase       TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script', 'complete', 'error')),
+        step        TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'skipped')),
+        output      TEXT,
+        started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT
+      );
+      INSERT OR IGNORE INTO provisioning_log_new SELECT * FROM provisioning_log;
+      DROP TABLE provisioning_log;
+      ALTER TABLE provisioning_log_new RENAME TO provisioning_log;
+      CREATE INDEX IF NOT EXISTS idx_provisioning_log_env ON provisioning_log(env_id);
+    `);
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

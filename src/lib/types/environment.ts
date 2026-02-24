@@ -49,6 +49,8 @@ export interface CreateEnvironmentRequest {
   community_script_slug?: string;
   install_method_type?: string;
   software_pool_ids?: string[];
+  software_ids?: string[];
   custom_script?: string;
   install_claude?: boolean;
+  config_name?: string;
 }

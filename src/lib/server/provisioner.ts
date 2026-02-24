@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { getDb } from './db';
 import { getPool } from './software-pools';
+import { resolveInstructionsForOs } from './software-repo';
 import { getScript } from './community-scripts';
 import { getEnvConfig } from './env-config';
 import type { SoftwarePoolItem } from '$lib/types/template';
@@ -25,6 +26,7 @@ export interface ProvisionerContext {
 
 export interface ProvisionerRequest {
   software_pool_ids?: string[];
+  software_ids?: string[];
   community_script_slug?: string;
   install_method_type?: string;
   custom_script?: string;
@@ -47,13 +49,28 @@ function logProvisioningStep(
   envId: string,
   phase: string,
   status: 'running' | 'success' | 'error' | 'skipped',
-  message: string
+  message: string,
+  output?: string | null
+): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO provisioning_log (env_id, phase, step, status, output, started_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+  `).run(envId, phase, message, status, output ?? null);
+  return Number(result.lastInsertRowid);
+}
+
+function completeProvisioningStep(
+  logId: number,
+  status: 'success' | 'error' | 'skipped',
+  output?: string | null
 ): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO provisioning_log (env_id, phase, step, status, output, started_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'))
-  `).run(envId, phase, message, status, null);
+    UPDATE provisioning_log
+    SET status = ?, output = COALESCE(?, output), completed_at = datetime('now')
+    WHERE id = ?
+  `).run(status, output ?? null, logId);
 }
 
 // =============================================================================
@@ -541,12 +558,36 @@ export async function runPipeline(
   req: ProvisionerRequest,
   onPhaseEvent?: OnPhaseEvent
 ): Promise<void> {
-  const emit = (event: PhaseEvent) => {
-    logProvisioningStep(ctx.envId, event.phase, event.status, event.message);
+  const emit = (event: PhaseEvent, output?: string | null) => {
+    const logId = logProvisioningStep(ctx.envId, event.phase, event.status, event.message, output);
+    if (event.status !== 'running') {
+      completeProvisioningStep(logId, event.status, output);
+    }
     onPhaseEvent?.(event);
   };
 
-  // 1. Software Pools
+  // 0. Software Repo entries (new flat catalog)
+  if (req.software_ids && req.software_ids.length > 0) {
+    emit({ phase: 'software_pool', status: 'running', message: 'Installing software from catalog...' });
+    try {
+      // Detect OS package manager to resolve correct instructions
+      const detectedPm = await detectPackageManager(ctx.exec);
+      const osFamily = detectedPm ?? 'apt';
+      const items = resolveInstructionsForOs(req.software_ids, osFamily);
+
+      console.log(`[spyre] Resolved ${items.length} instructions for OS family '${osFamily}' from ${req.software_ids.length} software entries`);
+      for (const item of items) {
+        await executeSoftwarePoolItem(ctx.exec, item, emit);
+      }
+      emit({ phase: 'software_pool', status: 'success', message: 'Software catalog items installed.' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      emit({ phase: 'software_pool', status: 'error', message: msg });
+      console.warn('[spyre] Software repo execution error:', msg);
+    }
+  }
+
+  // 1. Software Pools (legacy)
   if (req.software_pool_ids && req.software_pool_ids.length > 0) {
     emit({ phase: 'software_pool', status: 'running', message: 'Installing software pools...' });
     try {

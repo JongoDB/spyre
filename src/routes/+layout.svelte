@@ -27,15 +27,14 @@
 		{
 			label: 'AI',
 			items: [
-				{ href: '/claude/tasks', label: 'Claude Tasks', icon: 'claude' }
+				{ href: '/claude', label: 'Claude', icon: 'claude' }
 			]
 		},
 		{
 			label: 'BUILD',
 			items: [
 				{ href: '/configs', label: 'Configs', icon: 'configs' },
-				{ href: '/templates', label: 'Templates', icon: 'templates' },
-				{ href: '/software-pools', label: 'Software Pools', icon: 'software-pools' },
+				{ href: '/software-repo', label: 'Software', icon: 'software-pools' },
 				{ href: '/library', label: 'Library', icon: 'library' }
 			]
 		},

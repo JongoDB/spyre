@@ -1,6 +1,8 @@
 import { stringify as stringifyYaml } from 'yaml';
 import type { SpyreConfig, SpyreConfigScript, SpyreConfigPackage } from '$lib/types/yaml-config';
 import type { TemplateInput, TemplateWithRelations, SoftwarePoolItem, SoftwarePoolItemInput } from '$lib/types/template';
+import type { CreateEnvironmentRequest } from '$lib/types/environment';
+import { getSoftwareByName } from './software-repo';
 
 /**
  * Convert a validated SpyreConfig into a TemplateInput suitable for DB creation.
@@ -311,6 +313,62 @@ export function templateToYamlConfig(template: TemplateWithRelations): SpyreConf
  */
 export function yamlConfigToString(config: SpyreConfig): string {
   return stringifyYaml(config, { indent: 2, lineWidth: 120 });
+}
+
+/**
+ * Convert a resolved SpyreConfig into a CreateEnvironmentRequest.
+ * Resolves software names to IDs via software-repo lookups.
+ */
+export function configToCreateRequest(config: SpyreConfig, envName: string): CreateEnvironmentRequest {
+	const { spec } = config;
+	const { platform, provision, lxc, access } = spec;
+
+	// Resolve software names to IDs
+	const softwareIds: string[] = [];
+	if (spec.software) {
+		for (const swName of spec.software) {
+			const entry = getSoftwareByName(swName);
+			if (entry) softwareIds.push(entry.id);
+		}
+	}
+
+	// Build SSH keys from authorized_keys
+	let sshKeys: string | undefined;
+	if (provision?.authorized_keys && provision.authorized_keys.length > 0) {
+		sshKeys = provision.authorized_keys.join('\n');
+	}
+
+	// Parse IP mode from network config
+	let nameserver: string | undefined;
+	if (platform.network?.dns) {
+		nameserver = platform.network.dns;
+	}
+
+	const req: CreateEnvironmentRequest = {
+		name: envName,
+		type: platform.type,
+		template: platform.template ?? '',
+		cores: platform.resources?.cores ?? 1,
+		memory: platform.resources?.memory ?? 512,
+		disk: platform.resources?.disk ?? 8,
+		nameserver,
+		unprivileged: lxc?.unprivileged ?? true,
+		nesting: lxc?.nesting ?? true,
+		ssh_enabled: access?.ssh_enabled ?? true,
+		password: access?.root_password,
+		default_user: access?.default_user,
+		custom_script: spec.helper_script,
+		software_ids: softwareIds.length > 0 ? softwareIds : undefined,
+		config_name: config.metadata.name,
+		install_claude: true,
+	};
+
+	if (spec.community_script) {
+		req.community_script_slug = spec.community_script.slug;
+		req.install_method_type = spec.community_script.install_method;
+	}
+
+	return req;
 }
 
 /**

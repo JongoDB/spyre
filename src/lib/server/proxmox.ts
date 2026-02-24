@@ -69,7 +69,20 @@ async function proxmoxFetch<T>(
     throw createError('FORBIDDEN', 'Proxmox API token lacks required privileges.');
   }
   if (response.status === 500) {
-    throw createError('PROXMOX_ERROR', 'Proxmox internal server error.');
+    const body = await response.text().catch(() => '');
+    // Try to extract a meaningful error message from the Proxmox response
+    let detail = 'internal server error';
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed.errors) {
+        detail = Object.values(parsed.errors).join('; ');
+      } else if (parsed.data) {
+        detail = String(parsed.data);
+      }
+    } catch {
+      if (body) detail = body.slice(0, 500);
+    }
+    throw createError('PROXMOX_ERROR', `Proxmox error: ${detail}`);
   }
   if (!response.ok) {
     const body = await response.text().catch(() => '');

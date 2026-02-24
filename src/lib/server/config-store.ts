@@ -3,6 +3,8 @@ import { join, relative, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { validateConfig, validateYamlString } from './config-validator';
 import type { SpyreConfig, SpyreConfigSpec, ConfigListEntry, ConfigValidationResult } from '$lib/types/yaml-config';
+import { indexSingleConfig, removeFromIndex } from './config-index';
+import { formDataToYaml, type ConfigFormData } from './config-form';
 
 const CONFIGS_DIR = join(process.cwd(), 'configs');
 const MAX_INHERITANCE_DEPTH = 5;
@@ -276,7 +278,19 @@ export function saveConfig(name: string, yamlText: string): ConfigValidationResu
   }
 
   writeFileSync(path, yamlText, 'utf-8');
+
+  // Update the DB index
+  try { indexSingleConfig(name); } catch { /* index failure is non-fatal */ }
+
   return result;
+}
+
+/**
+ * Save a config from form data. Converts to YAML, validates, then saves.
+ */
+export function saveConfigFromForm(name: string, formData: ConfigFormData): ConfigValidationResult {
+  const yamlText = formDataToYaml(formData);
+  return saveConfig(name, yamlText);
 }
 
 /**
@@ -299,6 +313,9 @@ export function deleteConfig(name: string): void {
   }
 
   unlinkSync(path);
+
+  // Remove from DB index
+  try { removeFromIndex(name); } catch { /* index failure is non-fatal */ }
 }
 
 /**

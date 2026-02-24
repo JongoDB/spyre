@@ -1,10 +1,44 @@
 <script lang="ts">
 	import type { PageData } from './$types';
-	import type { ConfigListEntry } from '$lib/types/yaml-config';
 
 	let { data }: { data: PageData } = $props();
 
 	let deleting = $state('');
+	let searchQuery = $state('');
+	let filterKind = $state<'all' | 'Environment' | 'EnvironmentBase'>('all');
+
+	interface EnhancedConfigEntry {
+		name: string;
+		kind: 'Environment' | 'EnvironmentBase';
+		description?: string;
+		extends?: string;
+		labels?: Record<string, string>;
+		osType?: string;
+		osTemplate?: string;
+		hasServices: boolean;
+		hasClaude: boolean;
+		modifiedAt: string;
+	}
+
+	let allConfigs = $derived<EnhancedConfigEntry[]>([...data.bases, ...data.environments]);
+
+	let filteredConfigs = $derived(() => {
+		let result = allConfigs;
+		if (filterKind !== 'all') {
+			result = result.filter(c => c.kind === filterKind);
+		}
+		if (searchQuery.trim()) {
+			const q = searchQuery.toLowerCase();
+			result = result.filter(c =>
+				c.name.toLowerCase().includes(q) ||
+				(c.description ?? '').toLowerCase().includes(q)
+			);
+		}
+		return result;
+	});
+
+	let bases = $derived(filteredConfigs().filter(c => c.kind === 'EnvironmentBase'));
+	let environments = $derived(filteredConfigs().filter(c => c.kind === 'Environment'));
 
 	async function handleDelete(name: string) {
 		if (!confirm(`Delete config '${name}'? This cannot be undone.`)) return;
@@ -24,21 +58,6 @@
 		}
 	}
 
-	async function handleImport(name: string) {
-		try {
-			const res = await fetch(`/api/configs/${encodeURIComponent(name)}/import`, { method: 'POST' });
-			if (res.ok) {
-				const tpl = await res.json();
-				alert(`Imported as template: ${tpl.name}`);
-			} else {
-				const body = await res.json().catch(() => ({}));
-				alert(body.message ?? `Import failed (HTTP ${res.status}).`);
-			}
-		} catch {
-			alert('Network error.');
-		}
-	}
-
 	function formatDate(iso: string): string {
 		return new Date(iso).toLocaleDateString('en-US', {
 			month: 'short', day: 'numeric', year: 'numeric',
@@ -51,10 +70,10 @@
 	<header class="page-header">
 		<div class="header-row">
 			<div>
-				<h1>YAML Configs</h1>
+				<h1>Configs</h1>
 				<p class="subtitle">File-based environment definitions with inheritance. Stored in <code>configs/</code>.</p>
 			</div>
-			<a href="/configs/editor" class="btn btn-primary">
+			<a href="/configs/new" class="btn btn-primary">
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<line x1="12" y1="5" x2="12" y2="19" />
 					<line x1="5" y1="12" x2="19" y2="12" />
@@ -64,7 +83,22 @@
 		</div>
 	</header>
 
-	{#if data.bases.length === 0 && data.environments.length === 0}
+	<!-- Search and Filters -->
+	<div class="search-bar">
+		<input
+			type="text"
+			class="form-input search-input"
+			placeholder="Search configs..."
+			bind:value={searchQuery}
+		/>
+		<select class="form-select filter-select" bind:value={filterKind}>
+			<option value="all">All Kinds</option>
+			<option value="Environment">Environment</option>
+			<option value="EnvironmentBase">Base</option>
+		</select>
+	</div>
+
+	{#if filteredConfigs().length === 0}
 		<div class="empty-state card">
 			<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-icon">
 				<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -72,29 +106,31 @@
 				<line x1="16" y1="13" x2="8" y2="13" />
 				<line x1="16" y1="17" x2="8" y2="17" />
 			</svg>
-			<p>No YAML configs found.</p>
-			<p class="empty-hint">Create a new config or add <code>.yaml</code> files to the <code>configs/</code> directory.</p>
+			{#if searchQuery || filterKind !== 'all'}
+				<p>No configs match your search.</p>
+			{:else}
+				<p>No YAML configs found.</p>
+				<p class="empty-hint">Create a new config or add <code>.yaml</code> files to the <code>configs/</code> directory.</p>
+			{/if}
 		</div>
 	{/if}
 
-	{#if data.bases.length > 0}
+	{#if bases.length > 0}
 		<section class="config-section">
 			<h2 class="section-title">Base Configs</h2>
-			<p class="section-desc">Reusable base configurations that can be extended by environment configs.</p>
 			<div class="config-grid">
-				{#each data.bases as config (config.name)}
+				{#each bases as config (config.name)}
 					{@render configCard(config)}
 				{/each}
 			</div>
 		</section>
 	{/if}
 
-	{#if data.environments.length > 0}
+	{#if environments.length > 0}
 		<section class="config-section">
 			<h2 class="section-title">Environment Configs</h2>
-			<p class="section-desc">Ready-to-provision environment definitions.</p>
 			<div class="config-grid">
-				{#each data.environments as config (config.name)}
+				{#each environments as config (config.name)}
 					{@render configCard(config)}
 				{/each}
 			</div>
@@ -102,8 +138,8 @@
 	{/if}
 </div>
 
-{#snippet configCard(config: ConfigListEntry)}
-	<div class="config-card card">
+{#snippet configCard(config: EnhancedConfigEntry)}
+	<a href="/configs/{encodeURIComponent(config.name)}" class="config-card card">
 		<div class="config-header">
 			<span class="config-name">{config.name}</span>
 			<span class="kind-badge" class:base={config.kind === 'EnvironmentBase'}>
@@ -115,15 +151,20 @@
 			<p class="config-desc">{config.description}</p>
 		{/if}
 
-		{#if config.extends}
-			<div class="config-extends">
-				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<polyline points="15 10 20 15 15 20" />
-					<path d="M4 4v7a4 4 0 0 0 4 4h12" />
-				</svg>
-				<span>extends <code>{config.extends}</code></span>
-			</div>
-		{/if}
+		<div class="config-badges">
+			{#if config.osType}
+				<span class="info-badge">{config.osType}</span>
+			{/if}
+			{#if config.extends}
+				<span class="info-badge extends-badge">extends {config.extends}</span>
+			{/if}
+			{#if config.hasServices}
+				<span class="info-badge services-badge">services</span>
+			{/if}
+			{#if config.hasClaude}
+				<span class="info-badge claude-badge">claude</span>
+			{/if}
+		</div>
 
 		{#if config.labels && Object.keys(config.labels).length > 0}
 			<div class="config-labels">
@@ -133,23 +174,18 @@
 			</div>
 		{/if}
 
-		<div class="config-meta">
+		<div class="config-footer">
 			<span class="config-date">{formatDate(config.modifiedAt)}</span>
-		</div>
-
-		<div class="config-actions">
-			<a href="/configs/editor?name={encodeURIComponent(config.name)}" class="btn btn-small btn-secondary">Edit</a>
-			<button type="button" class="btn btn-small btn-secondary" onclick={() => handleImport(config.name)} title="Create a Spyre template from this config">Import as Template</button>
 			<button
 				type="button"
 				class="btn btn-small btn-danger"
 				disabled={deleting === config.name}
-				onclick={() => handleDelete(config.name)}
+				onclick={(e: MouseEvent) => { e.stopPropagation(); e.preventDefault(); handleDelete(config.name); }}
 			>
 				{deleting === config.name ? 'Deleting...' : 'Delete'}
 			</button>
 		</div>
-	</div>
+	</a>
 {/snippet}
 
 <style>
@@ -158,7 +194,7 @@
 	}
 
 	.page-header {
-		margin-bottom: 28px;
+		margin-bottom: 20px;
 	}
 
 	.header-row {
@@ -184,6 +220,22 @@
 		background-color: rgba(255, 255, 255, 0.06);
 		padding: 1px 5px;
 		border-radius: 3px;
+	}
+
+	/* ---- Search ---- */
+
+	.search-bar {
+		display: flex;
+		gap: 10px;
+		margin-bottom: 20px;
+	}
+
+	.search-input {
+		flex: 1;
+	}
+
+	.filter-select {
+		max-width: 180px;
 	}
 
 	/* ---- Empty state ---- */
@@ -219,19 +271,16 @@
 	/* ---- Sections ---- */
 
 	.config-section {
-		margin-bottom: 32px;
+		margin-bottom: 28px;
 	}
 
 	.section-title {
-		font-size: 1rem;
+		font-size: 0.875rem;
 		font-weight: 600;
-		margin-bottom: 4px;
-	}
-
-	.section-desc {
-		font-size: 0.8125rem;
 		color: var(--text-secondary);
-		margin-bottom: 16px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin-bottom: 12px;
 	}
 
 	.config-grid {
@@ -247,6 +296,13 @@
 		flex-direction: column;
 		gap: 8px;
 		padding: 16px;
+		text-decoration: none;
+		color: inherit;
+		transition: border-color var(--transition);
+	}
+
+	.config-card:hover {
+		border-color: var(--accent);
 	}
 
 	.config-header {
@@ -289,19 +345,34 @@
 		overflow: hidden;
 	}
 
-	.config-extends {
+	.config-badges {
 		display: flex;
-		align-items: center;
-		gap: 5px;
-		font-size: 0.75rem;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.info-badge {
+		font-size: 0.625rem;
+		font-weight: 500;
+		padding: 2px 6px;
+		border-radius: 3px;
+		background-color: rgba(255, 255, 255, 0.06);
 		color: var(--text-secondary);
 	}
 
-	.config-extends code {
-		font-size: 0.6875rem;
-		background-color: rgba(255, 255, 255, 0.06);
-		padding: 1px 5px;
-		border-radius: 3px;
+	.extends-badge {
+		background-color: rgba(251, 191, 36, 0.1);
+		color: #fbbf24;
+	}
+
+	.services-badge {
+		background-color: rgba(34, 197, 94, 0.1);
+		color: var(--success);
+	}
+
+	.claude-badge {
+		background-color: rgba(99, 102, 241, 0.1);
+		color: var(--accent);
 	}
 
 	.config-labels {
@@ -319,18 +390,19 @@
 		color: var(--text-secondary);
 	}
 
-	.config-meta {
-		font-size: 0.6875rem;
-		color: var(--text-secondary);
-		opacity: 0.6;
-	}
-
-	.config-actions {
+	.config-footer {
 		display: flex;
-		gap: 6px;
+		align-items: center;
+		justify-content: space-between;
 		margin-top: 4px;
 		padding-top: 10px;
 		border-top: 1px solid var(--border);
+	}
+
+	.config-date {
+		font-size: 0.6875rem;
+		color: var(--text-secondary);
+		opacity: 0.6;
 	}
 
 	.btn-small {

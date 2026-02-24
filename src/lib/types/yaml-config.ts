@@ -19,11 +19,13 @@ export interface SpyreConfigMetadata {
 export interface SpyreConfigSpec {
   platform: SpyreConfigPlatform;
   helper_script?: string;
+  software?: string[];
   provision?: SpyreConfigProvision;
   services?: SpyreConfigService[];
   claude?: SpyreConfigClaude;
   lxc?: SpyreConfigLxc;
   access?: SpyreConfigAccess;
+  community_script?: { slug: string; install_method?: string };
 }
 
 export interface SpyreConfigPlatform {
