@@ -180,7 +180,7 @@ export async function initiateAuth(): Promise<{ oauthUrl: string | null }> {
     // Strip CLAUDECODE env var to avoid "nested session" error when
     // the controller itself is running inside a Claude Code session
     const { CLAUDECODE: _, ...cleanEnv } = process.env;
-    _authProcess = spawn('claude', ['login', '--method', 'oauth'], {
+    _authProcess = spawn('claude', ['auth', 'login'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: cleanEnv
     });
