@@ -2,6 +2,7 @@
 	import '../app.css';
 	import type { Snippet } from 'svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import SpyreLogo from '$lib/components/SpyreLogo.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -109,10 +110,7 @@
 <div class="app-shell">
 	<aside class="sidebar">
 		<div class="sidebar-header">
-			<a href="/" class="logo">
-				<span class="logo-icon">&#9670;</span>
-				<span class="logo-text">SPYRE</span>
-			</a>
+			<SpyreLogo />
 		</div>
 
 		<nav class="sidebar-nav">
@@ -174,27 +172,8 @@
 	}
 
 	.sidebar-header {
-		padding: 20px 20px 16px;
+		padding: 16px 20px;
 		border-bottom: 1px solid var(--border);
-	}
-
-	.logo {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		color: var(--text-primary);
-		text-decoration: none;
-	}
-
-	.logo-icon {
-		font-size: 1.25rem;
-		color: var(--accent);
-	}
-
-	.logo-text {
-		font-size: 1rem;
-		font-weight: 700;
-		letter-spacing: 0.15em;
 	}
 
 	.sidebar-nav {
@@ -288,7 +267,6 @@
 			min-width: 60px;
 		}
 
-		.logo-text,
 		.nav-label,
 		.nav-section-label,
 		.version-tag {
