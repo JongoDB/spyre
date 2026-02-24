@@ -100,6 +100,12 @@ export interface SoftwarePoolItem {
   destination: string | null;
   label: string | null;
   post_command: string | null;
+  package_manager: 'auto' | 'apt' | 'apk' | 'dnf' | 'yum' | null;
+  interpreter: 'bash' | 'sh' | 'python3' | 'node' | 'ruby' | 'perl' | null;
+  source_url: string | null;
+  file_mode: string | null;
+  file_owner: string | null;
+  condition: string | null;
   created_at: string;
 }
 
@@ -110,6 +116,12 @@ export interface SoftwarePoolItemInput {
   label?: string;
   post_command?: string;
   sort_order?: number;
+  package_manager?: 'auto' | 'apt' | 'apk' | 'dnf' | 'yum' | null;
+  interpreter?: 'bash' | 'sh' | 'python3' | 'node' | 'ruby' | 'perl' | null;
+  source_url?: string | null;
+  file_mode?: string | null;
+  file_owner?: string | null;
+  condition?: string | null;
 }
 
 export interface SoftwarePool {

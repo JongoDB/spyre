@@ -5,10 +5,10 @@ import { Client as SshClient } from 'ssh2';
 import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import * as proxmox from './proxmox';
-import { getPool } from './software-pools';
 import { getScript } from './community-scripts';
+import { runPipeline } from './provisioner';
+import type { ProvisionerContext } from './provisioner';
 import type { Environment, CreateEnvironmentRequest } from '$lib/types/environment';
-import type { SoftwarePoolItem } from '$lib/types/template';
 import type { CommunityScript, CommunityScriptInstallMethod } from '$lib/types/community-script';
 
 function generatePassword(length = 16): string {
@@ -212,7 +212,7 @@ async function configureContainerSsh(vmid: number): Promise<void> {
 }
 
 // =============================================================================
-// Provisioner Pipeline
+// Provisioner Pipeline — delegates to provisioner.ts
 // =============================================================================
 
 function logProvisioningStep(
@@ -220,9 +220,8 @@ function logProvisioningStep(
   phase: string,
   status: 'running' | 'success' | 'error',
   message: string
-) {
+): void {
   const db = getDb();
-  // Map friendly names to schema-valid status values
   const dbStatus = status === 'running' ? 'running' : status === 'error' ? 'error' : 'success';
   db.prepare(`
     INSERT INTO provisioning_log (env_id, phase, step, status, output, started_at)
@@ -231,135 +230,27 @@ function logProvisioningStep(
 }
 
 /**
- * Detect the package manager available inside the container.
+ * Build a ProvisionerContext that wraps containerExec for the given environment.
  */
-async function detectPackageManager(vmid: number, ip: string | null, password: string): Promise<'apt' | 'apk' | 'yum' | 'dnf' | null> {
-  for (const pm of ['apt', 'apk', 'dnf', 'yum'] as const) {
-    try {
-      const result = await containerExec(vmid, ip, password, `which ${pm} 2>/dev/null`);
-      if (result.code === 0 && result.stdout.trim()) return pm;
-    } catch {
-      // continue
-    }
-  }
-  return null;
-}
-
-/**
- * Install packages inside the container using the detected package manager.
- */
-async function installPackages(vmid: number, ip: string | null, password: string, packages: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  const pm = await detectPackageManager(vmid, ip, password);
-  if (!pm) {
-    return { code: 1, stdout: '', stderr: 'No package manager found (apt/apk/dnf/yum)' };
-  }
-
-  let cmd: string;
-  switch (pm) {
-    case 'apt':
-      cmd = `DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${packages}`;
-      break;
-    case 'apk':
-      cmd = `apk add --no-cache ${packages}`;
-      break;
-    case 'dnf':
-      cmd = `dnf install -y ${packages}`;
-      break;
-    case 'yum':
-      cmd = `yum install -y ${packages}`;
-      break;
-  }
-
-  return containerExec(vmid, ip, password, cmd, 120000);
-}
-
-/**
- * Execute a single software pool item inside the container.
- */
-async function executeSoftwarePoolItem(
+function buildProvisionerContext(
+  envId: string,
   vmid: number,
   ip: string | null,
-  password: string,
-  item: SoftwarePoolItem
-): Promise<void> {
-  const label = item.label || item.content.slice(0, 50);
-
-  switch (item.item_type) {
-    case 'package': {
-      console.log(`[spyre] Installing packages: ${item.content}`);
-      const result = await installPackages(vmid, ip, password, item.content);
-      if (result.code !== 0) {
-        console.warn(`[spyre] Package install warning: ${result.stderr.slice(0, 200)}`);
-      }
-      break;
-    }
-    case 'script': {
-      console.log(`[spyre] Running script: ${label}`);
-      const result = await containerExec(vmid, ip, password, item.content, 120000);
-      if (result.code !== 0) {
-        console.warn(`[spyre] Script exited with code ${result.code}: ${result.stderr.slice(0, 200)}`);
-      }
-      break;
-    }
-    case 'file': {
-      const dest = item.destination || '/tmp/spyre-file';
-      console.log(`[spyre] Writing file to ${dest}`);
-      const writeCmd = `mkdir -p "$(dirname '${dest}')" && cat > '${dest}' << 'SPYRE_EOF'\n${item.content}\nSPYRE_EOF`;
-      const result = await containerExec(vmid, ip, password, writeCmd, 30000);
-      if (result.code !== 0) {
-        console.warn(`[spyre] File write failed: ${result.stderr.slice(0, 200)}`);
-      }
-      break;
-    }
-  }
-
-  // Run post_command if specified
-  if (item.post_command) {
-    console.log(`[spyre] Running post-command: ${item.post_command.slice(0, 50)}`);
-    const result = await containerExec(vmid, ip, password, item.post_command, 60000);
-    if (result.code !== 0) {
-      console.warn(`[spyre] Post-command exited with code ${result.code}: ${result.stderr.slice(0, 200)}`);
-    }
-  }
-}
-
-/**
- * Create a non-root user inside the container with sudo access.
- */
-async function createDefaultUser(
-  vmid: number,
-  ip: string | null,
-  rootPassword: string,
-  username: string
-): Promise<void> {
-  console.log(`[spyre] Creating default user: ${username}`);
-
-  const commands = [
-    `id ${username} 2>/dev/null || useradd -m -s /bin/bash ${username}`,
-    `echo '${username}:${rootPassword}' | chpasswd`,
-    `which sudo >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq sudo 2>/dev/null) || apk add sudo 2>/dev/null || yum install -y sudo 2>/dev/null || true`,
-    `usermod -aG sudo ${username} 2>/dev/null || usermod -aG wheel ${username} 2>/dev/null || true`,
-    `echo '${username} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/${username} && chmod 440 /etc/sudoers.d/${username}`,
-    `if [ -f /root/.ssh/authorized_keys ]; then mkdir -p /home/${username}/.ssh && cp /root/.ssh/authorized_keys /home/${username}/.ssh/ && chown -R ${username}:${username} /home/${username}/.ssh && chmod 700 /home/${username}/.ssh && chmod 600 /home/${username}/.ssh/authorized_keys; fi`
-  ];
-
-  for (const cmd of commands) {
-    try {
-      const result = await containerExec(vmid, ip, rootPassword, cmd, 30000);
-      if (result.code !== 0 && result.stderr) {
-        console.warn(`[spyre] User creation step warning: ${result.stderr.slice(0, 200)}`);
-      }
-    } catch (err) {
-      console.warn(`[spyre] User creation step failed:`, err);
-    }
-  }
-
-  console.log(`[spyre] Default user '${username}' created with sudo access`);
+  rootPassword: string
+): ProvisionerContext {
+  return {
+    envId,
+    vmid,
+    ip,
+    rootPassword,
+    exec: (command: string, timeoutMs?: number) =>
+      containerExec(vmid, ip, rootPassword, command, timeoutMs ?? 60000),
+  };
 }
 
 /**
  * Run the full provisioner pipeline after container creation.
- * Pipeline order: software pools -> community script -> custom script -> default user
+ * Delegates to the extracted provisioner module.
  */
 async function runProvisionerPipeline(
   envId: string,
@@ -368,107 +259,14 @@ async function runProvisionerPipeline(
   rootPassword: string,
   req: CreateEnvironmentRequest
 ): Promise<void> {
-  const db = getDb();
-
-  // 1. Software Pools
-  if (req.software_pool_ids && req.software_pool_ids.length > 0) {
-    logProvisioningStep(envId, 'software_pool', 'running', 'Installing software pools...');
-    try {
-      for (const poolId of req.software_pool_ids) {
-        const pool = getPool(poolId);
-        if (!pool) {
-          console.warn(`[spyre] Software pool ${poolId} not found — skipping`);
-          continue;
-        }
-
-        console.log(`[spyre] Executing software pool: ${pool.name} (${pool.items.length} items)`);
-        for (const item of pool.items) {
-          await executeSoftwarePoolItem(vmid, ip, rootPassword, item);
-        }
-      }
-      logProvisioningStep(envId, 'software_pool', 'success', 'Software pools installed.');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logProvisioningStep(envId, 'software_pool', 'error', msg);
-      console.warn('[spyre] Software pool execution error:', msg);
-    }
-  }
-
-  // 2. Community Script
-  if (req.community_script_slug) {
-    logProvisioningStep(envId, 'community_script', 'running', `Installing community script: ${req.community_script_slug}`);
-    try {
-      const script = getScript(req.community_script_slug);
-      if (script && script.install_methods.length > 0) {
-        const method = script.install_methods[0];
-        if (method.script) {
-          const scriptUrl = `https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/${method.script}`;
-          console.log(`[spyre] Downloading and executing community script: ${scriptUrl}`);
-
-          const result = await containerExec(
-            vmid, ip, rootPassword,
-            `bash -c "$(curl -fsSL '${scriptUrl}')"`,
-            300000
-          );
-
-          if (result.code !== 0) {
-            console.warn(`[spyre] Community script exited with code ${result.code}: ${result.stderr.slice(0, 500)}`);
-            logProvisioningStep(envId, 'community_script', 'error', `Script exited with code ${result.code}`);
-          } else {
-            logProvisioningStep(envId, 'community_script', 'success', `Community script installed.`);
-          }
-        } else {
-          logProvisioningStep(envId, 'community_script', 'error', 'No install script URL found in script metadata.');
-        }
-      } else {
-        logProvisioningStep(envId, 'community_script', 'error', `Community script '${req.community_script_slug}' not found in cache.`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logProvisioningStep(envId, 'community_script', 'error', msg);
-      console.warn('[spyre] Community script execution error:', msg);
-    }
-  }
-
-  // 3. Custom Script
-  if (req.custom_script) {
-    logProvisioningStep(envId, 'custom_script', 'running', 'Running custom provisioning script...');
-    try {
-      console.log(`[spyre] Running custom script (${req.custom_script.length} chars)`);
-      const result = await containerExec(vmid, ip, rootPassword, req.custom_script, 300000);
-      if (result.code !== 0) {
-        console.warn(`[spyre] Custom script exited with code ${result.code}: ${result.stderr.slice(0, 500)}`);
-        logProvisioningStep(envId, 'custom_script', 'error', `Script exited with code ${result.code}`);
-      } else {
-        logProvisioningStep(envId, 'custom_script', 'success', 'Custom script completed.');
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logProvisioningStep(envId, 'custom_script', 'error', msg);
-      console.warn('[spyre] Custom script execution error:', msg);
-    }
-  }
-
-  // 4. Default User
-  if (req.default_user) {
-    logProvisioningStep(envId, 'post_provision', 'running', `Creating default user: ${req.default_user}`);
-    try {
-      await createDefaultUser(vmid, ip, rootPassword, req.default_user);
-      logProvisioningStep(envId, 'post_provision', 'success', `Default user '${req.default_user}' created.`);
-
-      const env = getEnvironment(envId);
-      if (env?.metadata) {
-        const meta = JSON.parse(env.metadata);
-        meta.default_user = req.default_user;
-        db.prepare("UPDATE environments SET metadata = ?, updated_at = datetime('now') WHERE id = ?")
-          .run(JSON.stringify(meta), envId);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logProvisioningStep(envId, 'post_provision', 'error', msg);
-      console.warn('[spyre] Default user creation error:', msg);
-    }
-  }
+  const ctx = buildProvisionerContext(envId, vmid, ip, rootPassword);
+  await runPipeline(ctx, {
+    software_pool_ids: req.software_pool_ids,
+    community_script_slug: req.community_script_slug,
+    install_method_type: req.install_method_type,
+    custom_script: req.custom_script,
+    default_user: req.default_user,
+  });
 }
 
 export function listEnvironments(): Environment[] {

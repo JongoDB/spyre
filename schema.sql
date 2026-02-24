@@ -245,6 +245,12 @@ CREATE TABLE IF NOT EXISTS software_pool_items (
     destination     TEXT,                                    -- for 'file' type: target path in container
     label           TEXT,                                    -- human-readable label
     post_command    TEXT,                                    -- command to run after this item
+    package_manager TEXT CHECK (package_manager IS NULL OR package_manager IN ('auto', 'apt', 'apk', 'dnf', 'yum')),
+    interpreter     TEXT CHECK (interpreter IS NULL OR interpreter IN ('bash', 'sh', 'python3', 'node', 'ruby', 'perl')),
+    source_url      TEXT,                                    -- remote URL to fetch script/file at provision time
+    file_mode       TEXT,                                    -- file permissions e.g. '0755'
+    file_owner      TEXT,                                    -- file ownership e.g. 'www-data:www-data'
+    condition       TEXT,                                    -- shell command that must exit 0 for item to run
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -381,6 +387,18 @@ INSERT OR IGNORE INTO network_profiles (id, name, description, bridge, ip_mode, 
     ('profile-dhcp', 'DHCP on vmbr0', 'Automatic IP via DHCP on the default bridge', 'vmbr0', 'dhcp', '8.8.8.8');
 
 -- Seed Data — Community-scripts categories (from metadata.json)
+-- =============================================================================
+-- Migration: Add enhanced fields to software_pool_items
+-- =============================================================================
+-- These ALTER TABLE statements are safe to re-run; SQLite will error silently
+-- if the column already exists. Wrapped in a check pattern for safety.
+ALTER TABLE software_pool_items ADD COLUMN package_manager TEXT CHECK (package_manager IS NULL OR package_manager IN ('auto', 'apt', 'apk', 'dnf', 'yum'));
+ALTER TABLE software_pool_items ADD COLUMN interpreter TEXT CHECK (interpreter IS NULL OR interpreter IN ('bash', 'sh', 'python3', 'node', 'ruby', 'perl'));
+ALTER TABLE software_pool_items ADD COLUMN source_url TEXT;
+ALTER TABLE software_pool_items ADD COLUMN file_mode TEXT;
+ALTER TABLE software_pool_items ADD COLUMN file_owner TEXT;
+ALTER TABLE software_pool_items ADD COLUMN condition TEXT;
+
 INSERT OR IGNORE INTO categories (id, name, description, icon, sort_order) VALUES
     ('cat-0',  'Miscellaneous',              'General scripts and tools',                              'more-horizontal', 99),
     ('cat-1',  'Proxmox & Virtualization',   'Manage Proxmox VE and virtualization platforms',         'server',           1),

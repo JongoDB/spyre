@@ -51,8 +51,8 @@ export function createPool(input: SoftwarePoolInput): SoftwarePoolWithItems {
   `);
 
   const insertItem = db.prepare(`
-    INSERT INTO software_pool_items (id, pool_id, sort_order, item_type, content, destination, label, post_command)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO software_pool_items (id, pool_id, sort_order, item_type, content, destination, label, post_command, package_manager, interpreter, source_url, file_mode, file_owner, condition)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   db.transaction(() => {
@@ -69,7 +69,13 @@ export function createPool(input: SoftwarePoolInput): SoftwarePoolWithItems {
           item.content,
           item.destination ?? null,
           item.label ?? null,
-          item.post_command ?? null
+          item.post_command ?? null,
+          item.package_manager ?? null,
+          item.interpreter ?? null,
+          item.source_url ?? null,
+          item.file_mode ?? null,
+          item.file_owner ?? null,
+          item.condition ?? null
         );
       }
     }
@@ -106,8 +112,8 @@ export function updatePool(id: string, input: Partial<SoftwarePoolInput>): Softw
   if (input.items !== undefined) {
     const deleteItems = db.prepare('DELETE FROM software_pool_items WHERE pool_id = ?');
     const insertItem = db.prepare(`
-      INSERT INTO software_pool_items (id, pool_id, sort_order, item_type, content, destination, label, post_command)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO software_pool_items (id, pool_id, sort_order, item_type, content, destination, label, post_command, package_manager, interpreter, source_url, file_mode, file_owner, condition)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     db.transaction(() => {
@@ -122,7 +128,13 @@ export function updatePool(id: string, input: Partial<SoftwarePoolInput>): Softw
           item.content,
           item.destination ?? null,
           item.label ?? null,
-          item.post_command ?? null
+          item.post_command ?? null,
+          item.package_manager ?? null,
+          item.interpreter ?? null,
+          item.source_url ?? null,
+          item.file_mode ?? null,
+          item.file_owner ?? null,
+          item.condition ?? null
         );
       }
     })();
@@ -164,9 +176,14 @@ export function addItem(poolId: string, input: SoftwarePoolItemInput): SoftwareP
   const sortOrder = input.sort_order ?? (maxOrder.max_order != null ? maxOrder.max_order + 1 : 0);
 
   db.prepare(`
-    INSERT INTO software_pool_items (id, pool_id, sort_order, item_type, content, destination, label, post_command)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, poolId, sortOrder, input.item_type, input.content, input.destination ?? null, input.label ?? null, input.post_command ?? null);
+    INSERT INTO software_pool_items (id, pool_id, sort_order, item_type, content, destination, label, post_command, package_manager, interpreter, source_url, file_mode, file_owner, condition)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, poolId, sortOrder, input.item_type, input.content,
+    input.destination ?? null, input.label ?? null, input.post_command ?? null,
+    input.package_manager ?? null, input.interpreter ?? null, input.source_url ?? null,
+    input.file_mode ?? null, input.file_owner ?? null, input.condition ?? null
+  );
 
   // Update pool timestamp
   db.prepare("UPDATE software_pools SET updated_at = datetime('now') WHERE id = ?").run(poolId);

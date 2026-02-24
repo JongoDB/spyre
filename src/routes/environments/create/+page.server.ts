@@ -3,6 +3,7 @@ import { authenticate, listAllOsTemplates, listStorage } from '$lib/server/proxm
 import { getEnvConfig } from '$lib/server/env-config';
 import { listTemplates } from '$lib/server/templates';
 import { listScripts } from '$lib/server/community-scripts';
+import { listConfigs } from '$lib/server/config-store';
 import type { ProxmoxStorageContent, ProxmoxStorage } from '$lib/types/proxmox';
 
 export const load: PageServerLoad = async ({ url }) => {
@@ -38,6 +39,9 @@ export const load: PageServerLoad = async ({ url }) => {
 	const communityQuery = url.searchParams.get('cq') ?? undefined;
 	const communityResult = listScripts({ query: communityQuery, limit: 12 });
 
+	// YAML configs for "From Config" tab
+	const yamlConfigs = listConfigs().filter(c => c.kind === 'Environment');
+
 	return {
 		templates: osTemplates,
 		storageList,
@@ -45,6 +49,7 @@ export const load: PageServerLoad = async ({ url }) => {
 		defaultDns,
 		spyreTemplates,
 		communityScripts: communityResult.scripts,
-		communityQuery: communityQuery ?? ''
+		communityQuery: communityQuery ?? '',
+		yamlConfigs
 	};
 };

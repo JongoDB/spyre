@@ -5,7 +5,7 @@
 	let { data }: { data: PageData } = $props();
 
 	// Tab state
-	let activeTab = $state<'template' | 'quick' | 'community'>('template');
+	let activeTab = $state<'template' | 'quick' | 'community' | 'config'>('template');
 
 	// Shared state
 	let name = $state('');
@@ -50,6 +50,35 @@
 	let communityIsValid = $derived(
 		name.trim().length > 0 && selectedScriptSlug.length > 0
 	);
+
+	// ── From Config tab ──
+	let selectedConfigName = $state('');
+	let configPreview = $state<Record<string, unknown> | null>(null);
+	let configLoading = $state(false);
+
+	let configIsValid = $derived(
+		name.trim().length > 0 && selectedConfigName.length > 0 && configPreview !== null
+	);
+
+	async function loadConfigPreview(configName: string) {
+		if (!configName) {
+			configPreview = null;
+			return;
+		}
+		configLoading = true;
+		try {
+			const res = await fetch(`/api/configs/${encodeURIComponent(configName)}/resolve`);
+			if (res.ok) {
+				configPreview = await res.json();
+			} else {
+				configPreview = null;
+			}
+		} catch {
+			configPreview = null;
+		} finally {
+			configLoading = false;
+		}
+	}
 
 	// ── Handlers ──
 	async function handleTemplateSubmit(e: SubmitEvent) {
@@ -193,6 +222,73 @@
 		}
 	}
 
+	async function handleConfigSubmit(e: SubmitEvent) {
+		e.preventDefault();
+		if (!configIsValid || submitting || !configPreview) return;
+
+		submitting = true;
+		errorMessage = '';
+
+		try {
+			// Import the config as a template first
+			const importRes = await fetch(`/api/configs/${encodeURIComponent(selectedConfigName)}/import`, {
+				method: 'POST'
+			});
+
+			if (!importRes.ok) {
+				const body = await importRes.json().catch(() => ({}));
+				errorMessage = body.message ?? 'Failed to import config as template.';
+				return;
+			}
+
+			const template = await importRes.json();
+
+			// Resolve the newly-created template
+			const resolveRes = await fetch(`/api/templates/${template.id}/resolve`);
+			if (!resolveRes.ok) {
+				errorMessage = 'Failed to resolve imported template.';
+				return;
+			}
+
+			const resolved = await resolveRes.json();
+
+			// Create environment using the resolved template
+			const res = await fetch('/api/environments', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: name.trim(),
+					type: resolved.type,
+					template: resolved.os_template,
+					cores: resolved.cores,
+					memory: resolved.memory,
+					disk: resolved.disk,
+					nameserver: resolved.dns,
+					unprivileged: resolved.unprivileged,
+					nesting: resolved.nesting,
+					ssh_enabled: resolved.ssh_enabled,
+					password: resolved.root_password || undefined,
+					template_id: template.id,
+					default_user: resolved.default_user || undefined,
+					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
+					custom_script: resolved.custom_script || undefined
+				})
+			});
+
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({}));
+				errorMessage = body.message ?? `Creation failed (HTTP ${res.status}).`;
+				return;
+			}
+
+			await goto('/environments');
+		} catch {
+			errorMessage = 'Network error. Please check your connection and try again.';
+		} finally {
+			submitting = false;
+		}
+	}
+
 	function searchCommunity() {
 		goto(`/environments/create?cq=${encodeURIComponent(communitySearch)}`);
 	}
@@ -270,6 +366,20 @@
 				<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
 			</svg>
 			Community
+		</button>
+		<button
+			type="button"
+			class="tab"
+			class:active={activeTab === 'config'}
+			onclick={() => activeTab = 'config'}
+		>
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+				<polyline points="14 2 14 8 20 8" />
+				<line x1="16" y1="13" x2="8" y2="13" />
+				<line x1="16" y1="17" x2="8" y2="17" />
+			</svg>
+			From Config
 		</button>
 	</div>
 
@@ -605,6 +715,117 @@
 				</form>
 			{/if}
 		</div>
+	{/if}
+
+	<!-- ═══════════════ FROM CONFIG TAB ═══════════════ -->
+	{#if activeTab === 'config'}
+		<form class="create-form card" onsubmit={handleConfigSubmit}>
+			<div class="form-group">
+				<label for="cfg-name" class="form-label">Environment Name</label>
+				<input
+					id="cfg-name"
+					type="text"
+					class="form-input"
+					placeholder="my-dev-env"
+					autocomplete="off"
+					bind:value={name}
+					required
+				/>
+			</div>
+
+			<div class="form-group">
+				<label for="cfg-select" class="form-label">YAML Config</label>
+				{#if data.yamlConfigs.length > 0}
+					<select
+						id="cfg-select"
+						class="form-select"
+						bind:value={selectedConfigName}
+						onchange={() => loadConfigPreview(selectedConfigName)}
+						required
+					>
+						<option value="" disabled>Select a config</option>
+						{#each data.yamlConfigs as cfg (cfg.name)}
+							<option value={cfg.name}>
+								{cfg.name}
+								{#if cfg.description} — {cfg.description}{/if}
+								{#if cfg.extends} (extends {cfg.extends}){/if}
+							</option>
+						{/each}
+					</select>
+				{:else}
+					<p class="empty-hint">
+						No YAML configs found. <a href="/configs/editor">Create a config</a> first, or add <code>.yaml</code> files to the <code>configs/</code> directory.
+					</p>
+				{/if}
+			</div>
+
+			{#if configLoading}
+				<div class="preview-card">
+					<div class="preview-label">Loading config preview...</div>
+				</div>
+			{:else if configPreview}
+				{@const spec = configPreview.spec as Record<string, unknown> | undefined}
+				{@const platform = spec?.platform as Record<string, unknown> | undefined}
+				{@const resources = platform?.resources as Record<string, unknown> | undefined}
+				{@const provision = spec?.provision as Record<string, unknown> | undefined}
+
+				<div class="preview-card">
+					<div class="preview-label">Resolved Config Preview</div>
+					<div class="preview-grid">
+						<div class="preview-item">
+							<span class="preview-key">Type</span>
+							<span class="preview-value">{platform?.type === 'lxc' ? 'LXC Container' : platform?.type === 'vm' ? 'VM' : '—'}</span>
+						</div>
+						{#if platform?.template}
+							<div class="preview-item">
+								<span class="preview-key">OS</span>
+								<span class="preview-value code">{platform.template}</span>
+							</div>
+						{/if}
+						{#if resources?.cores}
+							<div class="preview-item">
+								<span class="preview-key">CPU</span>
+								<span class="preview-value">{resources.cores} cores</span>
+							</div>
+						{/if}
+						{#if resources?.memory}
+							<div class="preview-item">
+								<span class="preview-key">Memory</span>
+								<span class="preview-value">{resources.memory} MB</span>
+							</div>
+						{/if}
+						{#if resources?.disk}
+							<div class="preview-item">
+								<span class="preview-key">Disk</span>
+								<span class="preview-value">{resources.disk} GB</span>
+							</div>
+						{/if}
+						{#if provision?.packages && Array.isArray(provision.packages)}
+							<div class="preview-item">
+								<span class="preview-key">Packages</span>
+								<span class="preview-value">{(provision.packages as string[]).length} packages</span>
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			<div class="form-actions">
+				<a href="/environments" class="btn btn-secondary">Cancel</a>
+				<button
+					type="submit"
+					class="btn btn-primary"
+					disabled={!configIsValid || submitting || !data.proxmoxConnected}
+				>
+					{#if submitting}
+						<span class="spinner"></span>
+						Creating...
+					{:else}
+						Create from Config
+					{/if}
+				</button>
+			</div>
+		</form>
 	{/if}
 </div>
 

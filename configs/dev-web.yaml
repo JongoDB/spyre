@@ -1,0 +1,40 @@
+apiVersion: spyre/v1
+kind: Environment
+extends: bases/ubuntu-dev
+metadata:
+  name: dev-web
+  description: Web development environment with Node.js and common frameworks
+  labels:
+    os: ubuntu
+    purpose: web-development
+    stack: node
+
+spec:
+  platform:
+    resources:
+      cores: 4
+      memory: 4096
+      disk: 32
+
+  provision:
+    packages:
+      - nginx
+      - redis-tools
+    scripts:
+      - name: Install Node.js 22 via NodeSource
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y nodejs
+      - name: Install global npm packages
+        run: npm install -g pnpm typescript tsx
+
+  services:
+    - name: HTTP
+      port: 80
+      protocol: http
+    - name: Dev Server
+      port: 5173
+      protocol: http
+    - name: API
+      port: 3000
+      protocol: http

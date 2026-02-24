@@ -88,6 +88,26 @@
 
 	let isValid = $derived(name.trim().length > 0);
 
+	async function handleExportYaml() {
+		try {
+			const res = await fetch(`/api/templates/${t.id}/export`);
+			if (!res.ok) {
+				errorMessage = 'Failed to export template as YAML.';
+				return;
+			}
+			const yamlText = await res.text();
+			const blob = new Blob([yamlText], { type: 'text/yaml' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${t.name.replace(/[^a-zA-Z0-9_-]/g, '-')}.yaml`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch {
+			errorMessage = 'Failed to export template.';
+		}
+	}
+
 	function togglePool(poolId: string) {
 		if (selectedPoolIds.includes(poolId)) {
 			selectedPoolIds = selectedPoolIds.filter(id => id !== poolId);
@@ -696,6 +716,9 @@
 		<!-- ============ Actions ============ -->
 		<div class="form-actions">
 			<a href="/templates" class="btn btn-secondary">Cancel</a>
+			<button type="button" class="btn btn-secondary" onclick={handleExportYaml}>
+				Export YAML
+			</button>
 			<button
 				type="submit"
 				class="btn btn-primary"

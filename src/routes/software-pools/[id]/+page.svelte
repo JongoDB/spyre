@@ -11,6 +11,13 @@
 		label: string;
 		destination: string;
 		post_command: string;
+		package_manager: string;
+		interpreter: string;
+		source_url: string;
+		file_mode: string;
+		file_owner: string;
+		condition: string;
+		showAdvanced: boolean;
 	}
 
 	let name = $state(data.pool.name);
@@ -22,7 +29,14 @@
 			content: item.content,
 			label: item.label ?? '',
 			destination: item.destination ?? '',
-			post_command: item.post_command ?? ''
+			post_command: item.post_command ?? '',
+			package_manager: item.package_manager ?? '',
+			interpreter: item.interpreter ?? '',
+			source_url: item.source_url ?? '',
+			file_mode: item.file_mode ?? '',
+			file_owner: item.file_owner ?? '',
+			condition: item.condition ?? '',
+			showAdvanced: !!(item.condition)
 		}))
 	);
 
@@ -30,6 +44,12 @@
 	let errorMessage = $state('');
 
 	let itemCounter = $state(0);
+
+	// Preview state
+	let showPreview = $state(false);
+	let previewPm = $state<string>('apt');
+	let previewCommands = $state<Array<{ index: number; label: string; command: string; skipped?: boolean; skip_reason?: string }>>([]);
+	let previewLoading = $state(false);
 
 	function newItemId(): string {
 		itemCounter++;
@@ -43,7 +63,14 @@
 			content: '',
 			label: '',
 			destination: '',
-			post_command: ''
+			post_command: '',
+			package_manager: '',
+			interpreter: '',
+			source_url: '',
+			file_mode: '',
+			file_owner: '',
+			condition: '',
+			showAdvanced: false
 		});
 	}
 
@@ -57,6 +84,64 @@
 		const temp = items[index];
 		items[index] = items[target];
 		items[target] = temp;
+	}
+
+	async function handleFileUpload(item: FormItem) {
+		const input = document.createElement('input');
+		input.type = 'file';
+		input.onchange = async () => {
+			const file = input.files?.[0];
+			if (!file) return;
+			if (file.size > 1024 * 1024) {
+				errorMessage = `File "${file.name}" is too large (max 1 MB).`;
+				return;
+			}
+
+			try {
+				const formData = new FormData();
+				formData.append('file', file);
+				const res = await fetch(`/api/software-pools/${data.pool.id}/upload`, {
+					method: 'POST',
+					body: formData
+				});
+				if (!res.ok) {
+					const body = await res.json().catch(() => ({}));
+					errorMessage = body.message ?? 'Upload failed.';
+					return;
+				}
+				const result = await res.json();
+				item.content = result.content;
+			} catch {
+				errorMessage = 'Failed to upload file.';
+			}
+		};
+		input.click();
+	}
+
+	async function loadPreview() {
+		previewLoading = true;
+		try {
+			const res = await fetch(`/api/software-pools/${data.pool.id}/preview`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ target_pm: previewPm || undefined })
+			});
+			if (res.ok) {
+				const result = await res.json();
+				previewCommands = result.commands;
+			}
+		} catch {
+			// silently fail
+		} finally {
+			previewLoading = false;
+		}
+	}
+
+	async function togglePreview() {
+		showPreview = !showPreview;
+		if (showPreview) {
+			await loadPreview();
+		}
 	}
 
 	let isValid = $derived(name.trim().length > 0);
@@ -77,7 +162,13 @@
 				label: item.label.trim() || undefined,
 				destination: item.item_type === 'file' && item.destination.trim() ? item.destination.trim() : undefined,
 				post_command: item.post_command.trim() || undefined,
-				sort_order: i
+				sort_order: i,
+				package_manager: item.item_type === 'package' && item.package_manager ? item.package_manager : undefined,
+				interpreter: item.item_type === 'script' && item.interpreter ? item.interpreter : undefined,
+				source_url: (item.item_type === 'script' || item.item_type === 'file') && item.source_url.trim() ? item.source_url.trim() : undefined,
+				file_mode: item.item_type === 'file' && item.file_mode.trim() ? item.file_mode.trim() : undefined,
+				file_owner: item.item_type === 'file' && item.file_owner.trim() ? item.file_owner.trim() : undefined,
+				condition: item.condition.trim() || undefined
 			}))
 		};
 
@@ -158,13 +249,62 @@
 		<div class="items-section">
 			<div class="items-header">
 				<h2 class="items-title">Items</h2>
-				<button type="button" class="btn btn-secondary btn-sm" onclick={addItem}>
-					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-						<path d="M12 5v14M5 12h14" />
-					</svg>
-					Add Item
-				</button>
+				<div class="items-header-actions">
+					<button type="button" class="btn btn-secondary btn-sm" onclick={togglePreview}>
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="16 18 22 12 16 6" />
+							<polyline points="8 6 2 12 8 18" />
+						</svg>
+						Preview Commands
+					</button>
+					<button type="button" class="btn btn-secondary btn-sm" onclick={addItem}>
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+							<path d="M12 5v14M5 12h14" />
+						</svg>
+						Add Item
+					</button>
+				</div>
 			</div>
+
+			<!-- Preview panel -->
+			{#if showPreview}
+				<div class="preview-panel">
+					<div class="preview-header">
+						<span class="preview-title">Command Preview</span>
+						<div class="preview-controls">
+							<label for="preview-pm" class="preview-pm-label">Target PM:</label>
+							<select id="preview-pm" class="form-select form-select-sm" bind:value={previewPm} onchange={loadPreview}>
+								<option value="apt">apt</option>
+								<option value="apk">apk</option>
+								<option value="dnf">dnf</option>
+								<option value="yum">yum</option>
+							</select>
+						</div>
+					</div>
+					{#if previewLoading}
+						<div class="preview-loading">Loading preview...</div>
+					{:else if previewCommands.length === 0}
+						<div class="preview-empty">No items to preview. Save the pool first.</div>
+					{:else}
+						<div class="preview-list">
+							{#each previewCommands as cmd}
+								<div class="preview-item" class:preview-item-skipped={cmd.skipped}>
+									<div class="preview-item-header">
+										<span class="preview-item-label">#{cmd.index + 1} {cmd.label}</span>
+										{#if cmd.skipped}
+											<span class="preview-badge-skipped">skipped</span>
+										{/if}
+									</div>
+									{#if cmd.skip_reason}
+										<p class="preview-skip-reason">{cmd.skip_reason}</p>
+									{/if}
+									<pre class="preview-code">{cmd.command}</pre>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
 
 			{#if items.length === 0}
 				<div class="items-empty">
@@ -240,16 +380,80 @@
 									</div>
 								</div>
 
+								{#if item.item_type === 'package'}
+									<div class="form-group">
+										<label for="item-pm-{item.id}" class="form-label">Package manager</label>
+										<select
+											id="item-pm-{item.id}"
+											class="form-select"
+											bind:value={item.package_manager}
+										>
+											<option value="">Auto-detect</option>
+											<option value="apt">apt (Debian/Ubuntu)</option>
+											<option value="apk">apk (Alpine)</option>
+											<option value="dnf">dnf (Fedora/RHEL 8+)</option>
+											<option value="yum">yum (RHEL/CentOS 7)</option>
+										</select>
+									</div>
+								{/if}
+
+								{#if item.item_type === 'script'}
+									<div class="form-group">
+										<label for="item-interp-{item.id}" class="form-label">Interpreter</label>
+										<select
+											id="item-interp-{item.id}"
+											class="form-select"
+											bind:value={item.interpreter}
+										>
+											<option value="">bash (default)</option>
+											<option value="bash">bash</option>
+											<option value="sh">sh</option>
+											<option value="python3">python3</option>
+											<option value="node">node</option>
+											<option value="ruby">ruby</option>
+											<option value="perl">perl</option>
+										</select>
+									</div>
+								{/if}
+
+								{#if item.item_type === 'script' || item.item_type === 'file'}
+									<div class="form-group">
+										<label for="item-url-{item.id}" class="form-label">Source URL <span class="optional-label">(optional — fetched at provision time)</span></label>
+										<input
+											id="item-url-{item.id}"
+											type="url"
+											class="form-input"
+											placeholder="https://example.com/script.sh"
+											bind:value={item.source_url}
+										/>
+									</div>
+								{/if}
+
 								<div class="form-group">
-									<label for="item-content-{item.id}" class="form-label">
-										{#if item.item_type === 'package'}
-											Package name(s)
-										{:else if item.item_type === 'script'}
-											Script content
-										{:else}
-											File content
+									<div class="content-label-row">
+										<label for="item-content-{item.id}" class="form-label">
+											{#if item.item_type === 'package'}
+												Package name(s)
+											{:else if item.item_type === 'script'}
+												Script content
+											{:else}
+												File content
+											{/if}
+										</label>
+										{#if item.item_type === 'script' || item.item_type === 'file'}
+											<button type="button" class="btn-upload" onclick={() => handleFileUpload(item)}>
+												<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+													<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+													<polyline points="17 8 12 3 7 8" />
+													<line x1="12" y1="3" x2="12" y2="15" />
+												</svg>
+												Upload
+											</button>
 										{/if}
-									</label>
+									</div>
+									{#if item.source_url && (item.item_type === 'script' || item.item_type === 'file')}
+										<p class="field-hint">Content will be fetched from URL at provision time. Local content below is optional.</p>
+									{/if}
 									<textarea
 										id="item-content-{item.id}"
 										class="form-input form-textarea form-textarea-code"
@@ -274,6 +478,29 @@
 											bind:value={item.destination}
 										/>
 									</div>
+
+									<div class="form-row-inline">
+										<div class="form-group">
+											<label for="item-mode-{item.id}" class="form-label">File mode <span class="optional-label">(optional)</span></label>
+											<input
+												id="item-mode-{item.id}"
+												type="text"
+												class="form-input"
+												placeholder="0644"
+												bind:value={item.file_mode}
+											/>
+										</div>
+										<div class="form-group">
+											<label for="item-owner-{item.id}" class="form-label">File owner <span class="optional-label">(optional)</span></label>
+											<input
+												id="item-owner-{item.id}"
+												type="text"
+												class="form-input"
+												placeholder="root:root"
+												bind:value={item.file_owner}
+											/>
+										</div>
+									</div>
 								{/if}
 
 								<div class="form-group">
@@ -285,6 +512,44 @@
 										placeholder="e.g. systemctl restart myapp"
 										bind:value={item.post_command}
 									/>
+								</div>
+
+								<!-- Advanced section -->
+								<div class="advanced-section">
+									<button
+										type="button"
+										class="advanced-toggle"
+										onclick={() => item.showAdvanced = !item.showAdvanced}
+									>
+										<svg
+											width="12"
+											height="12"
+											viewBox="0 0 24 24"
+											fill="none"
+											stroke="currentColor"
+											stroke-width="2"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											class:rotated={item.showAdvanced}
+										>
+											<polyline points="6 9 12 15 18 9" />
+										</svg>
+										Advanced
+									</button>
+									{#if item.showAdvanced}
+										<div class="advanced-fields">
+											<div class="form-group">
+												<label for="item-condition-{item.id}" class="form-label">Condition <span class="optional-label">(shell command — must exit 0 to run item)</span></label>
+												<input
+													id="item-condition-{item.id}"
+													type="text"
+													class="form-input"
+													placeholder="which python3"
+													bind:value={item.condition}
+												/>
+											</div>
+										</div>
+									{/if}
 								</div>
 							</div>
 						</div>
@@ -403,6 +668,11 @@
 		margin-bottom: 16px;
 	}
 
+	.items-header-actions {
+		display: flex;
+		gap: 8px;
+	}
+
 	.items-title {
 		font-size: 1rem;
 		font-weight: 600;
@@ -505,6 +775,197 @@
 		font-weight: 400;
 		color: var(--text-secondary);
 		opacity: 0.6;
+	}
+
+	/* ---- Content label row with upload button ---- */
+
+	.content-label-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 4px;
+	}
+
+	.content-label-row .form-label {
+		margin-bottom: 0;
+	}
+
+	.btn-upload {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 8px;
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: color var(--transition), border-color var(--transition);
+	}
+
+	.btn-upload:hover {
+		color: var(--text-primary);
+		border-color: var(--text-secondary);
+	}
+
+	.field-hint {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		opacity: 0.7;
+		margin-bottom: 4px;
+	}
+
+	/* ---- Inline row for file mode/owner ---- */
+
+	.form-row-inline {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px;
+	}
+
+	/* ---- Advanced section ---- */
+
+	.advanced-section {
+		border-top: 1px solid var(--border);
+		padding-top: 10px;
+	}
+
+	.advanced-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 0;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		background: none;
+		border: none;
+		cursor: pointer;
+		transition: color var(--transition);
+	}
+
+	.advanced-toggle:hover {
+		color: var(--text-primary);
+	}
+
+	.advanced-toggle svg {
+		transition: transform 0.15s ease;
+	}
+
+	.advanced-toggle svg.rotated {
+		transform: rotate(180deg);
+	}
+
+	.advanced-fields {
+		padding-top: 10px;
+	}
+
+	/* ---- Preview panel ---- */
+
+	.preview-panel {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		margin-bottom: 16px;
+		overflow: hidden;
+	}
+
+	.preview-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 14px;
+		background-color: rgba(255, 255, 255, 0.02);
+		border-bottom: 1px solid var(--border);
+	}
+
+	.preview-title {
+		font-size: 0.8125rem;
+		font-weight: 600;
+	}
+
+	.preview-controls {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.preview-pm-label {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+	}
+
+	.form-select-sm {
+		padding: 2px 8px;
+		font-size: 0.75rem;
+	}
+
+	.preview-loading,
+	.preview-empty {
+		padding: 20px;
+		text-align: center;
+		color: var(--text-secondary);
+		font-size: 0.8125rem;
+	}
+
+	.preview-list {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.preview-item {
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.preview-item:last-child {
+		border-bottom: none;
+	}
+
+	.preview-item-skipped {
+		opacity: 0.5;
+	}
+
+	.preview-item-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 6px;
+	}
+
+	.preview-item-label {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+
+	.preview-badge-skipped {
+		font-size: 0.625rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		padding: 1px 6px;
+		border-radius: 3px;
+		background-color: rgba(234, 179, 8, 0.15);
+		color: rgb(234, 179, 8);
+	}
+
+	.preview-skip-reason {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		margin-bottom: 4px;
+	}
+
+	.preview-code {
+		font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+		font-size: 0.75rem;
+		line-height: 1.5;
+		padding: 8px 10px;
+		background-color: rgba(0, 0, 0, 0.2);
+		border-radius: var(--radius-sm);
+		overflow-x: auto;
+		white-space: pre-wrap;
+		word-break: break-all;
+		margin: 0;
 	}
 
 	/* ---- Actions ---- */

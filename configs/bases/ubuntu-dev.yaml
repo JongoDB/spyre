@@ -1,0 +1,42 @@
+apiVersion: spyre/v1
+kind: EnvironmentBase
+metadata:
+  name: ubuntu-dev
+  description: Base Ubuntu 22.04 development environment with common tools
+  labels:
+    os: ubuntu
+    purpose: development
+
+spec:
+  platform:
+    type: lxc
+    template: local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst
+    resources:
+      cores: 2
+      memory: 2048
+      swap: 512
+      disk: 16
+    network:
+      ip: dhcp
+
+  provision:
+    packages:
+      - curl
+      - wget
+      - git
+      - vim
+      - htop
+      - unzip
+      - build-essential
+      - ca-certificates
+      - gnupg
+      - lsb-release
+
+  lxc:
+    unprivileged: true
+    nesting: true
+
+  access:
+    ssh_enabled: true
+    default_user: dev
+    timezone: host
