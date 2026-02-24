@@ -50,4 +50,5 @@ export interface CreateEnvironmentRequest {
   install_method_type?: string;
   software_pool_ids?: string[];
   custom_script?: string;
+  install_claude?: boolean;
 }

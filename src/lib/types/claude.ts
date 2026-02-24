@@ -5,6 +5,16 @@ export interface ClaudeAuthState {
   error: string | null;
   lastAuthenticated: string | null;
   tokenExpiresAt: string | null;
+  authMethod: 'oauth' | 'token' | null;
+  email: string | null;
+  subscriptionType: string | null;
+  cliInstalled: boolean;
+}
+
+export interface ClaudeCliStatus {
+  installed: boolean;
+  version: string | null;
+  path: string | null;
 }
 
 export interface ClaudeTask {

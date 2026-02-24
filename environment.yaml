@@ -44,4 +44,4 @@ claude:
   auth_method: "oauth"
   health_check_interval: 60000
   task_timeout: 600000
-  auth_json_path: "~/.config/claude-code/auth.json"
+  auth_json_path: "~/.claude/.credentials.json"

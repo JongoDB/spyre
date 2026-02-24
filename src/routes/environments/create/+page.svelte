@@ -34,6 +34,7 @@
 	let unprivileged = $state(true);
 	let nesting = $state(true);
 	let showAdvanced = $state(false);
+	let installClaude = $state(true);
 
 	let quickIsValid = $derived(
 		name.trim().length > 0 && template.length > 0 && cores > 0 && memory > 0 && disk > 0
@@ -119,7 +120,8 @@
 					default_user: resolved.default_user || undefined,
 					community_script_slug: resolved.community_script_slug || undefined,
 					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
-					custom_script: resolved.custom_script || undefined
+					custom_script: resolved.custom_script || undefined,
+					install_claude: installClaude
 				})
 			});
 
@@ -159,7 +161,8 @@
 					ssh_enabled: sshEnabled,
 					nameserver: dns,
 					unprivileged,
-					nesting
+					nesting,
+					install_claude: installClaude
 				})
 			});
 
@@ -205,6 +208,7 @@
 					unprivileged: true,
 					nesting: true,
 					ssh_enabled: true,
+					install_claude: installClaude
 				})
 			});
 
@@ -271,7 +275,8 @@
 					template_id: template.id,
 					default_user: resolved.default_user || undefined,
 					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
-					custom_script: resolved.custom_script || undefined
+					custom_script: resolved.custom_script || undefined,
+					install_claude: installClaude
 				})
 			});
 
@@ -460,6 +465,12 @@
 				</div>
 			{/if}
 
+			<label class="checkbox-label claude-checkbox">
+				<input type="checkbox" bind:checked={installClaude} />
+				<span>Install Claude Code</span>
+				<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
+			</label>
+
 			<div class="form-actions">
 				<a href="/environments" class="btn btn-secondary">Cancel</a>
 				<button
@@ -581,6 +592,12 @@
 				</div>
 			{/if}
 
+			<label class="checkbox-label claude-checkbox">
+				<input type="checkbox" bind:checked={installClaude} />
+				<span>Install Claude Code</span>
+				<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
+			</label>
+
 			<div class="summary">
 				<span class="summary-label">Summary</span>
 				<span class="summary-text">
@@ -701,6 +718,12 @@
 						</div>
 					{/if}
 
+					<label class="checkbox-label claude-checkbox">
+						<input type="checkbox" bind:checked={installClaude} />
+						<span>Install Claude Code</span>
+						<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
+					</label>
+
 					<div class="form-actions">
 						<button type="button" class="btn btn-secondary" onclick={() => selectedScriptSlug = ''}>Cancel</button>
 						<button type="submit" class="btn btn-primary" disabled={!communityIsValid || submitting || !data.proxmoxConnected}>
@@ -809,6 +832,12 @@
 					</div>
 				</div>
 			{/if}
+
+			<label class="checkbox-label claude-checkbox">
+				<input type="checkbox" bind:checked={installClaude} />
+				<span>Install Claude Code</span>
+				<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
+			</label>
 
 			<div class="form-actions">
 				<a href="/environments" class="btn btn-secondary">Cancel</a>
@@ -1277,5 +1306,14 @@
 
 	.note.info {
 		color: var(--text-secondary);
+	}
+
+	/* ---- Claude checkbox ---- */
+
+	.claude-checkbox {
+		padding: 12px 16px;
+		background-color: rgba(99, 102, 241, 0.04);
+		border: 1px solid rgba(99, 102, 241, 0.15);
+		border-radius: var(--radius-sm);
 	}
 </style>

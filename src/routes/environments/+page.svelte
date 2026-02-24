@@ -240,15 +240,6 @@
 
 	<!-- Filters -->
 	<div class="filters">
-		{#if environments.length > 0}
-			<label class="select-all-check">
-				<input
-					type="checkbox"
-					checked={allFilteredSelected}
-					onchange={toggleSelectAll}
-				/>
-			</label>
-		{/if}
 		<input
 			type="text"
 			class="form-input search-input"
@@ -262,6 +253,19 @@
 			<option value="provisioning">Provisioning</option>
 			<option value="error">Error</option>
 		</select>
+		{#if environments.length > 0}
+			<button
+				class="select-toggle"
+				class:active={selectedIds.size > 0}
+				onclick={toggleSelectAll}
+			>
+				{#if allFilteredSelected}
+					Deselect All
+				{:else}
+					Select All
+				{/if}
+			</button>
+		{/if}
 	</div>
 
 	<!-- Environment cards -->
@@ -279,18 +283,25 @@
 			{#each filtered as env (env.id)}
 				{@const resources = resourceMap.get(env.id)}
 				{@const health = healthMap.get(env.id)}
-				<div class="env-card card" class:selected={selectedIds.has(env.id)}>
-					<!-- Checkbox -->
-					<label
-						class="env-checkbox"
-						class:visible={selectedIds.size > 0 || selectedIds.has(env.id)}
-					>
-						<input
-							type="checkbox"
-							checked={selectedIds.has(env.id)}
-							onchange={() => toggleSelection(env.id)}
-						/>
-					</label>
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="env-card card"
+					class:selected={selectedIds.has(env.id)}
+					onclick={(e) => {
+						const target = e.target as HTMLElement;
+						if (!target.closest('button, a, input, select')) {
+							toggleSelection(env.id);
+						}
+					}}
+				>
+					{#if selectedIds.has(env.id)}
+						<div class="selected-indicator">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M20 6L9 17l-5-5" />
+							</svg>
+						</div>
+					{/if}
 
 					<div class="env-card-header">
 						<h3 class="env-name">{env.name}</h3>
@@ -422,7 +433,10 @@
 <!-- Bulk action bar -->
 {#if selectedIds.size > 0}
 	<div class="bulk-bar">
-		<span class="bulk-count">{selectedIds.size} selected</span>
+		<div class="bulk-left">
+			<span class="bulk-count">{selectedIds.size}</span>
+			<span class="bulk-label">environment{selectedIds.size > 1 ? 's' : ''} selected</span>
+		</div>
 		<div class="bulk-actions">
 			<button
 				class="btn btn-secondary btn-sm"
@@ -449,8 +463,11 @@
 		<button
 			class="bulk-clear"
 			onclick={() => { selectedIds = new Set(); }}
+			title="Clear selection"
 		>
-			Clear
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+				<path d="M18 6L6 18M6 6l12 12" />
+			</svg>
 		</button>
 	</div>
 {/if}
@@ -494,19 +511,6 @@
 		align-items: center;
 	}
 
-	.select-all-check {
-		display: flex;
-		align-items: center;
-		cursor: pointer;
-	}
-
-	.select-all-check input {
-		width: 16px;
-		height: 16px;
-		cursor: pointer;
-		accent-color: var(--accent);
-	}
-
 	.search-input {
 		flex: 1;
 		min-width: 200px;
@@ -514,6 +518,31 @@
 
 	.status-select {
 		min-width: 160px;
+	}
+
+	.select-toggle {
+		padding: 7px 14px;
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: all var(--transition);
+		white-space: nowrap;
+	}
+
+	.select-toggle:hover {
+		color: var(--text-primary);
+		border-color: var(--accent);
+		background-color: rgba(99, 102, 241, 0.06);
+	}
+
+	.select-toggle.active {
+		color: var(--accent);
+		border-color: var(--accent);
+		background-color: rgba(99, 102, 241, 0.1);
 	}
 
 	/* ---- Grid ---- */
@@ -533,30 +562,32 @@
 		position: relative;
 	}
 
+	.env-card {
+		cursor: pointer;
+	}
+
+	.env-card:hover {
+		border-color: rgba(99, 102, 241, 0.3);
+	}
+
 	.env-card.selected {
 		border-color: var(--accent);
 		box-shadow: 0 0 0 1px var(--accent);
+		background-color: rgba(99, 102, 241, 0.04);
 	}
 
-	.env-checkbox {
+	.selected-indicator {
 		position: absolute;
-		top: 12px;
-		left: -4px;
-		cursor: pointer;
-		opacity: 0;
-		transition: opacity var(--transition);
-	}
-
-	.env-checkbox.visible,
-	.env-card:hover .env-checkbox {
-		opacity: 1;
-	}
-
-	.env-checkbox input {
-		width: 14px;
-		height: 14px;
-		cursor: pointer;
-		accent-color: var(--accent);
+		top: 10px;
+		right: 10px;
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		background-color: var(--accent);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: white;
 	}
 
 	.env-card-header {
@@ -689,21 +720,41 @@
 		transform: translateX(-50%);
 		display: flex;
 		align-items: center;
-		gap: 12px;
-		padding: 10px 16px;
+		gap: 16px;
+		padding: 10px 12px 10px 16px;
 		background-color: var(--bg-card);
-		border: 1px solid var(--border);
+		border: 1px solid var(--accent);
 		border-radius: var(--radius);
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(99, 102, 241, 0.2);
 		z-index: 50;
 		animation: slideUp 0.2s ease;
 	}
 
-	.bulk-count {
-		font-size: 0.8125rem;
-		font-weight: 600;
-		color: var(--accent);
+	.bulk-left {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		white-space: nowrap;
+	}
+
+	.bulk-count {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 22px;
+		height: 22px;
+		padding: 0 6px;
+		font-size: 0.75rem;
+		font-weight: 700;
+		color: white;
+		background-color: var(--accent);
+		border-radius: 11px;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.bulk-label {
+		font-size: 0.8125rem;
+		color: var(--text-secondary);
 	}
 
 	.bulk-actions {
@@ -712,9 +763,11 @@
 	}
 
 	.bulk-clear {
-		padding: 4px 10px;
-		font-size: 0.75rem;
-		font-weight: 500;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
 		color: var(--text-secondary);
 		background: none;
 		border: none;
@@ -725,7 +778,7 @@
 
 	.bulk-clear:hover {
 		color: var(--text-primary);
-		background-color: rgba(255, 255, 255, 0.06);
+		background-color: rgba(255, 255, 255, 0.08);
 	}
 
 	@keyframes slideUp {

@@ -40,9 +40,9 @@
 		<p class="subtitle">Manage Claude Code authentication and configuration.</p>
 	</header>
 
-	<!-- Auth Panel -->
+	<!-- CLI Status & Auth Panel -->
 	<section class="section">
-		<ClaudeAuthPanel authState={data.authState} />
+		<ClaudeAuthPanel authState={data.authState} cliStatus={data.cliStatus} />
 	</section>
 
 	<!-- Configuration -->
@@ -73,8 +73,8 @@
 		<h2>Environment Setup</h2>
 		<div class="card setup-card">
 			<div class="setup-info">
-				<p>Claude CLI is automatically installed in new environments during provisioning. Credentials from this controller are propagated so Claude works immediately.</p>
-				<p class="setup-hint">If you re-authenticate or environments were created before auth was configured, use the button below to push credentials to all running environments.</p>
+				<p>When "Install Claude Code" is checked during environment creation, the CLI is installed and credentials from this controller are propagated so Claude works immediately.</p>
+				<p class="setup-hint">If you re-authenticate or need to update credentials in existing environments, use the button below to push credentials to all running environments that have Claude installed.</p>
 			</div>
 			<div class="setup-actions">
 				<button class="btn btn-primary btn-sm" onclick={propagateAuth} disabled={propagating}>

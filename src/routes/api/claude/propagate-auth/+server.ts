@@ -65,6 +65,18 @@ export const POST: RequestHandler = async ({ request }) => {
     try {
       const client = await getConnection(env.id);
 
+      // Check if Claude CLI is installed in this environment
+      const checkResult = await sshExec(client, 'which claude 2>/dev/null || command -v claude 2>/dev/null', 5000);
+      if (checkResult.code !== 0) {
+        results.push({
+          envId: env.id,
+          name: env.name,
+          success: false,
+          error: 'Claude CLI not installed in this environment'
+        });
+        continue;
+      }
+
       // Create ~/.claude directory
       await sshExec(client, 'mkdir -p /root/.claude', 10000);
 

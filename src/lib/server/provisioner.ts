@@ -429,7 +429,7 @@ const EMPTY_PROGRESS = JSON.stringify({
 
 /**
  * Inject .spyre/ tracking directory and CLAUDE.md into an environment.
- * Also installs Claude CLI if not already present.
+ * Does NOT install Claude CLI or propagate credentials — use installClaudeInEnvironment() for that.
  */
 export async function injectSpyreTracking(
   exec: ProvisionerContext['exec'],
@@ -450,16 +450,27 @@ export async function injectSpyreTracking(
   // Escape the content for heredoc
   const writeMd = `cat >> '${claudeMdPath}' << 'SPYRE_CLAUDEMD_EOF'\n${SPYRE_CLAUDE_MD}\nSPYRE_CLAUDEMD_EOF`;
   await exec(writeMd, 10000);
+}
+
+/**
+ * Install Claude CLI and propagate controller credentials into an environment.
+ * This is separate from injectSpyreTracking() so it can be called conditionally.
+ */
+export async function installClaudeInEnvironment(
+  exec: ProvisionerContext['exec'],
+  workingDir?: string
+): Promise<void> {
+  const baseDir = workingDir ?? '/root';
 
   // Install Claude CLI (non-fatal if fails)
   try {
     const checkResult = await exec('which claude 2>/dev/null || command -v claude 2>/dev/null', 5000);
     if (checkResult.code !== 0) {
-      console.log('[spyre] Installing Claude CLI...');
+      console.log('[spyre] Installing Claude CLI in environment...');
       await exec('curl -fsSL https://claude.ai/install.sh | sh', 120000);
-      console.log('[spyre] Claude CLI installed');
+      console.log('[spyre] Claude CLI installed in environment');
     } else {
-      console.log('[spyre] Claude CLI already installed');
+      console.log('[spyre] Claude CLI already installed in environment');
     }
   } catch (err) {
     console.warn('[spyre] Claude CLI installation failed (non-fatal):', err);

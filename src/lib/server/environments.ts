@@ -6,7 +6,7 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import * as proxmox from './proxmox';
 import { getScript } from './community-scripts';
-import { runPipeline, injectSpyreTracking } from './provisioner';
+import { runPipeline, injectSpyreTracking, installClaudeInEnvironment } from './provisioner';
 import type { ProvisionerContext } from './provisioner';
 import type { Environment, CreateEnvironmentRequest } from '$lib/types/environment';
 import type { CommunityScript, CommunityScriptInstallMethod } from '$lib/types/community-script';
@@ -649,12 +649,22 @@ async function createViaCommunityScript(
     // Non-fatal — container is created and the app is installed
   }
 
-  // Inject .spyre tracking and Claude CLI
+  // Inject .spyre tracking (always)
   try {
     const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
     await injectSpyreTracking(ctx.exec);
   } catch (trackErr) {
     console.warn('[spyre] Spyre tracking injection failed (non-fatal):', trackErr);
+  }
+
+  // Install Claude CLI if requested (opt-in)
+  if (req.install_claude) {
+    try {
+      const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
+      await installClaudeInEnvironment(ctx.exec);
+    } catch (claudeErr) {
+      console.warn('[spyre] Claude CLI installation failed (non-fatal):', claudeErr);
+    }
   }
 
   // Update environment status
@@ -820,12 +830,22 @@ async function createViaProxmoxApi(
     // Non-fatal — container is created and accessible
   }
 
-  // Inject .spyre tracking and Claude CLI
+  // Inject .spyre tracking (always)
   try {
     const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
     await injectSpyreTracking(ctx.exec);
   } catch (trackErr) {
     console.warn('[spyre] Spyre tracking injection failed (non-fatal):', trackErr);
+  }
+
+  // Install Claude CLI if requested (opt-in)
+  if (req.install_claude) {
+    try {
+      const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
+      await installClaudeInEnvironment(ctx.exec);
+    } catch (claudeErr) {
+      console.warn('[spyre] Claude CLI installation failed (non-fatal):', claudeErr);
+    }
   }
 
   // Update environment status

@@ -35,7 +35,9 @@
 	</section>
 
 	<!-- Claude auth status -->
-	<ClaudeAuthPanel authState={data.claudeAuthState} compact={true} />
+	<div class="claude-banner-wrap">
+		<ClaudeAuthPanel authState={data.claudeAuthState} compact={true} />
+	</div>
 
 	{#if data.activeTasks.length > 0}
 		<section class="active-tasks-banner">
@@ -217,6 +219,10 @@
 	@keyframes pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.5; }
+	}
+
+	.claude-banner-wrap {
+		margin-bottom: 24px;
 	}
 
 	/* ---- Stats grid ---- */
