@@ -118,11 +118,14 @@ These are Phase 2+ features per the implementation plan. Do not build, scaffold,
 
 ## Version Bumps
 
-When bumping the version (minor or major), update **only** `package.json`. The UI version tag in the sidebar reads from `package.json` automatically at build time via Vite's `define` (`__APP_VERSION__`).
+**IMPORTANT — Always do this when committing a version bump:**
 
-**Checklist:**
-1. Update `"version"` in `package.json`
-2. `git tag -a vX.Y.Z -m "release notes"`
-3. `git push && git push origin vX.Y.Z`
+The UI sidebar version tag (`v0.X.0`) reads from `package.json` at build time via Vite's `define` (`__APP_VERSION__`). The version in `package.json` **must** match the git tag. When asked to tag/release a new version, always update `package.json` first, then commit, then tag.
 
-No other files need manual version edits.
+**Checklist (every version bump):**
+1. Update `"version"` in `package.json` (this is what the UI displays — no other files need editing)
+2. Commit the change (include it with the feature commit, or as a separate `chore: bump version to X.Y.Z`)
+3. `git tag -a vX.Y.Z -m "release notes"`
+4. `git push && git push origin vX.Y.Z`
+
+No other files need manual version edits. The UI updates automatically on next build.
