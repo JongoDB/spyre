@@ -20,8 +20,11 @@
 	let showRaw = $state(false);
 	let runningCost = $state<number | null>(null);
 
+	// Local taskStatus takes priority — once we know the task finished, it's not running
+	// regardless of what the SSE-provided activeTask prop says (it can be stale)
 	const isRunning = $derived(
-		activeTask?.status === 'running' || activeTask?.status === 'pending' || !!streamWs
+		taskStatus == null &&
+		(activeTask?.status === 'running' || activeTask?.status === 'pending' || !!streamWs)
 	);
 
 	async function dispatchTask() {
@@ -196,7 +199,7 @@
 		<span class="hint">Ctrl+Enter to run</span>
 	</div>
 
-	{#if events.length > 0 || streamOutput || taskStatus}
+	{#if streamWs || events.length > 0 || streamOutput || taskStatus}
 		<div class="output-section">
 			<div class="output-header">
 				<div class="output-header-left">

@@ -96,7 +96,7 @@
 				if (mine) {
 					if (mine.progress) claudeProgress = mine.progress;
 					if (mine.gitActivity) claudeGitActivity = mine.gitActivity;
-					if (mine.activeTask) claudeActiveTask = mine.activeTask;
+					claudeActiveTask = mine.activeTask ?? null;
 				}
 			} catch {
 				// ignore
@@ -839,4 +839,5 @@
 	@keyframes spin {
 		to { transform: rotate(360deg); }
 	}
+
 </style>
