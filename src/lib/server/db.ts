@@ -253,6 +253,111 @@ function applyMigrations(db: Database.Database): void {
     `);
   }
 
+  // Personas table + persona_id on environments
+  const hasPersonasTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='personas'"
+  ).get();
+  if (!hasPersonasTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS personas (
+        id          TEXT PRIMARY KEY,
+        name        TEXT UNIQUE NOT NULL,
+        role        TEXT NOT NULL,
+        avatar      TEXT DEFAULT '🤖',
+        description TEXT,
+        instructions TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  const envCols = db.pragma('table_info(environments)') as Array<{ name: string }>;
+  if (envCols.length > 0 && !envCols.some(c => c.name === 'persona_id')) {
+    db.exec('ALTER TABLE environments ADD COLUMN persona_id TEXT');
+  }
+
+  // Settings table
+  const hasSettingsTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
+  ).get();
+  if (!hasSettingsTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  // Devcontainers tables
+  const hasDevcontainersTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='devcontainers'"
+  ).get();
+  if (!hasDevcontainersTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS devcontainers (
+        id              TEXT PRIMARY KEY,
+        env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        persona_id      TEXT REFERENCES personas(id) ON DELETE SET NULL,
+        container_name  TEXT NOT NULL,
+        service_name    TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','creating','running','stopped','error','removing')),
+        image           TEXT,
+        working_dir     TEXT NOT NULL DEFAULT '/workspace',
+        error_message   TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(env_id, service_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_devcontainers_env ON devcontainers(env_id);
+
+      CREATE TABLE IF NOT EXISTS devcontainer_progress (
+        devcontainer_id TEXT PRIMARY KEY REFERENCES devcontainers(id) ON DELETE CASCADE,
+        progress        TEXT,
+        fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS devcontainer_git_activity (
+        devcontainer_id TEXT PRIMARY KEY REFERENCES devcontainers(id) ON DELETE CASCADE,
+        recent_commits  TEXT,
+        diff_stat       TEXT,
+        git_status      TEXT,
+        branch          TEXT,
+        fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  // Docker/repo columns on environments
+  const envColsDocker = db.pragma('table_info(environments)') as Array<{ name: string }>;
+  if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'docker_enabled')) {
+    db.exec('ALTER TABLE environments ADD COLUMN docker_enabled INTEGER NOT NULL DEFAULT 0');
+  }
+  if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'repo_url')) {
+    db.exec('ALTER TABLE environments ADD COLUMN repo_url TEXT');
+  }
+  if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'git_branch')) {
+    db.exec("ALTER TABLE environments ADD COLUMN git_branch TEXT DEFAULT 'main'");
+  }
+  if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'project_dir')) {
+    db.exec("ALTER TABLE environments ADD COLUMN project_dir TEXT DEFAULT '/project'");
+  }
+
+  // devcontainer_id on claude_tasks
+  const taskColsDc = db.pragma('table_info(claude_tasks)') as Array<{ name: string }>;
+  if (taskColsDc.length > 0 && !taskColsDc.some(c => c.name === 'devcontainer_id')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN devcontainer_id TEXT');
+  }
+
+  // devcontainer_id on claude_task_queue
+  const queueColsDc = db.pragma('table_info(claude_task_queue)') as Array<{ name: string }>;
+  if (queueColsDc.length > 0 && !queueColsDc.some(c => c.name === 'devcontainer_id')) {
+    db.exec('ALTER TABLE claude_task_queue ADD COLUMN devcontainer_id TEXT');
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

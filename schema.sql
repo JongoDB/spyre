@@ -522,6 +522,70 @@ CREATE TABLE IF NOT EXISTS template_software (
 );
 
 -- =============================================================================
+-- Personas — Named agent identities with custom instructions
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS personas (
+    id          TEXT PRIMARY KEY,                        -- UUID v4
+    name        TEXT UNIQUE NOT NULL,                    -- "Alex" or "Security Analyst"
+    role        TEXT NOT NULL,                            -- "DevOps Engineer", "UI/UX Designer", etc.
+    avatar      TEXT DEFAULT '🤖',                       -- Emoji for UI cards/badges
+    description TEXT,                                    -- Short blurb shown on cards
+    instructions TEXT NOT NULL DEFAULT '',                -- Free-form text injected into CLAUDE.md
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Devcontainers — Docker-based agent containers within environments
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS devcontainers (
+    id              TEXT PRIMARY KEY,
+    env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+    persona_id      TEXT REFERENCES personas(id) ON DELETE SET NULL,
+    container_name  TEXT NOT NULL,
+    service_name    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','creating','running','stopped','error','removing')),
+    image           TEXT,
+    working_dir     TEXT NOT NULL DEFAULT '/workspace',
+    error_message   TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(env_id, service_name)
+);
+CREATE INDEX IF NOT EXISTS idx_devcontainers_env ON devcontainers(env_id);
+
+-- =============================================================================
+-- Devcontainer Progress — Cached progress.json from devcontainers
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS devcontainer_progress (
+    devcontainer_id TEXT PRIMARY KEY REFERENCES devcontainers(id) ON DELETE CASCADE,
+    progress        TEXT,
+    fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Devcontainer Git Activity — Cached git state from devcontainers
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS devcontainer_git_activity (
+    devcontainer_id TEXT PRIMARY KEY REFERENCES devcontainers(id) ON DELETE CASCADE,
+    recent_commits  TEXT,
+    diff_stat       TEXT,
+    git_status      TEXT,
+    branch          TEXT,
+    fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
+-- Settings — Global key-value configuration store
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
 -- Config Index — DB cache of filesystem YAML configs
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS config_index (

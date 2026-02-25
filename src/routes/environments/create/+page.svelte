@@ -38,6 +38,18 @@
 	let nesting = $state(true);
 	let showAdvanced = $state(false);
 	let installClaude = $state(true);
+	let selectedPersonaId = $state('');
+	let dockerEnabled = $state(false);
+	let repoUrl = $state('');
+	let gitBranch = $state('main');
+
+	// Auto-enable nesting when Docker mode is on; clear persona (assigned per-devcontainer)
+	$effect(() => {
+		if (dockerEnabled) {
+			nesting = true;
+			selectedPersonaId = '';
+		}
+	});
 
 	let quickIsValid = $derived(
 		name.trim().length > 0 && template.length > 0 && cores > 0 && memory > 0 && disk > 0
@@ -131,7 +143,11 @@
 					community_script_slug: resolved.community_script_slug || undefined,
 					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
 					custom_script: resolved.custom_script || undefined,
-					install_claude: installClaude
+					install_claude: installClaude,
+					persona_id: selectedPersonaId || undefined,
+					docker_enabled: dockerEnabled,
+					repo_url: repoUrl || undefined,
+					git_branch: gitBranch || undefined
 				})
 			});
 
@@ -173,7 +189,11 @@
 					nameserver: dns,
 					unprivileged,
 					nesting,
-					install_claude: installClaude
+					install_claude: installClaude,
+					persona_id: selectedPersonaId || undefined,
+					docker_enabled: dockerEnabled,
+					repo_url: repoUrl || undefined,
+					git_branch: gitBranch || undefined
 				})
 			});
 
@@ -220,7 +240,11 @@
 					unprivileged: true,
 					nesting: true,
 					ssh_enabled: true,
-					install_claude: installClaude
+					install_claude: installClaude,
+					persona_id: selectedPersonaId || undefined,
+					docker_enabled: dockerEnabled,
+					repo_url: repoUrl || undefined,
+					git_branch: gitBranch || undefined
 				})
 			});
 
@@ -253,7 +277,11 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					name: name.trim(),
-					install_claude: installClaude
+					install_claude: installClaude,
+					persona_id: selectedPersonaId || undefined,
+					docker_enabled: dockerEnabled,
+					repo_url: repoUrl || undefined,
+					git_branch: gitBranch || undefined
 				})
 			});
 
@@ -449,6 +477,40 @@
 				<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
 			</label>
 
+			<label class="checkbox-label docker-checkbox">
+				<input type="checkbox" bind:checked={dockerEnabled} />
+				<span>Docker Multi-Agent Mode</span>
+				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+			</label>
+
+			{#if dockerEnabled}
+				<div class="docker-fields">
+					<div class="form-group">
+						<label for="repo-url-tpl" class="form-label">Repository URL</label>
+						<input id="repo-url-tpl" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+						<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+					</div>
+					<div class="form-group">
+						<label for="git-branch-tpl" class="form-label">Git Branch</label>
+						<input id="git-branch-tpl" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+					</div>
+				</div>
+			{/if}
+
+			{#if !dockerEnabled && data.personas.length > 0}
+				<div class="form-group persona-selector">
+					<label for="persona-template">Persona</label>
+					<select id="persona-template" bind:value={selectedPersonaId}>
+						<option value="">None (generic agent)</option>
+						{#each data.personas as p}
+							<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
+						{/each}
+					</select>
+					<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+				</div>
+			{/if}
+
+	
 			<div class="form-actions">
 				<a href="/environments" class="btn btn-secondary">Cancel</a>
 				<button
@@ -576,6 +638,40 @@
 				<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
 			</label>
 
+			<label class="checkbox-label docker-checkbox">
+				<input type="checkbox" bind:checked={dockerEnabled} />
+				<span>Docker Multi-Agent Mode</span>
+				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+			</label>
+
+			{#if dockerEnabled}
+				<div class="docker-fields">
+					<div class="form-group">
+						<label for="repo-url-quick" class="form-label">Repository URL</label>
+						<input id="repo-url-quick" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+						<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+					</div>
+					<div class="form-group">
+						<label for="git-branch-quick" class="form-label">Git Branch</label>
+						<input id="git-branch-quick" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+					</div>
+				</div>
+			{/if}
+
+			{#if !dockerEnabled && data.personas.length > 0}
+				<div class="form-group persona-selector">
+					<label for="persona-quick">Persona</label>
+					<select id="persona-quick" bind:value={selectedPersonaId}>
+						<option value="">None (generic agent)</option>
+						{#each data.personas as p}
+							<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
+						{/each}
+					</select>
+					<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+				</div>
+			{/if}
+
+	
 			<div class="summary">
 				<span class="summary-label">Summary</span>
 				<span class="summary-text">
@@ -702,6 +798,39 @@
 						<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
 					</label>
 
+					<label class="checkbox-label docker-checkbox">
+						<input type="checkbox" bind:checked={dockerEnabled} />
+						<span>Docker Multi-Agent Mode</span>
+						<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+					</label>
+
+					{#if dockerEnabled}
+						<div class="docker-fields">
+							<div class="form-group">
+								<label for="repo-url-comm" class="form-label">Repository URL</label>
+								<input id="repo-url-comm" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+								<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+							</div>
+							<div class="form-group">
+								<label for="git-branch-comm" class="form-label">Git Branch</label>
+								<input id="git-branch-comm" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+							</div>
+						</div>
+					{/if}
+
+					{#if !dockerEnabled && data.personas.length > 0}
+						<div class="form-group persona-selector">
+							<label for="persona-community">Persona</label>
+							<select id="persona-community" bind:value={selectedPersonaId}>
+								<option value="">None (generic agent)</option>
+								{#each data.personas as p}
+									<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
+								{/each}
+							</select>
+							<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+						</div>
+					{/if}
+
 					<div class="form-actions">
 						<button type="button" class="btn btn-secondary" onclick={() => selectedScriptSlug = ''}>Cancel</button>
 						<button type="submit" class="btn btn-primary" disabled={!communityIsValid || submitting || !data.proxmoxConnected}>
@@ -817,6 +946,40 @@
 				<span class="form-hint">Install the Claude CLI and propagate credentials into this environment.</span>
 			</label>
 
+			<label class="checkbox-label docker-checkbox">
+				<input type="checkbox" bind:checked={dockerEnabled} />
+				<span>Docker Multi-Agent Mode</span>
+				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+			</label>
+
+			{#if dockerEnabled}
+				<div class="docker-fields">
+					<div class="form-group">
+						<label for="repo-url-cfg" class="form-label">Repository URL</label>
+						<input id="repo-url-cfg" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+						<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+					</div>
+					<div class="form-group">
+						<label for="git-branch-cfg" class="form-label">Git Branch</label>
+						<input id="git-branch-cfg" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+					</div>
+				</div>
+			{/if}
+
+			{#if !dockerEnabled && data.personas.length > 0}
+				<div class="form-group persona-selector">
+					<label for="persona-config">Persona</label>
+					<select id="persona-config" bind:value={selectedPersonaId}>
+						<option value="">None (generic agent)</option>
+						{#each data.personas as p}
+							<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
+						{/each}
+					</select>
+					<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+				</div>
+			{/if}
+
+	
 			<div class="form-actions">
 				<a href="/environments" class="btn btn-secondary">Cancel</a>
 				<button
@@ -1292,6 +1455,28 @@
 		padding: 12px 16px;
 		background-color: rgba(99, 102, 241, 0.04);
 		border: 1px solid rgba(99, 102, 241, 0.15);
+		border-radius: var(--radius-sm);
+	}
+
+	.persona-selector { margin-top: 8px; }
+	.persona-selector select { width: 100%; }
+
+	/* ---- Docker multi-agent ---- */
+
+	.docker-checkbox {
+		padding: 12px 16px;
+		background-color: rgba(34, 197, 94, 0.04);
+		border: 1px solid rgba(34, 197, 94, 0.15);
+		border-radius: var(--radius-sm);
+	}
+
+	.docker-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		padding: 16px;
+		background-color: rgba(34, 197, 94, 0.03);
+		border: 1px solid rgba(34, 197, 94, 0.12);
 		border-radius: var(--radius-sm);
 	}
 </style>

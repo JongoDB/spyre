@@ -145,6 +145,7 @@ export interface CreateLxcConfig {
   features?: string;
   timezone?: string;
   onboot?: boolean;
+  mountpoints?: Array<{ hostPath: string; containerPath: string; readonly?: boolean }>;
 }
 
 export async function createLxc(
@@ -188,6 +189,12 @@ export async function createLxc(
   }
   if (config.onboot != null) {
     body.set('onboot', config.onboot ? '1' : '0');
+  }
+  if (config.mountpoints) {
+    config.mountpoints.forEach((mp, i) => {
+      const ro = mp.readonly ? ',ro=1' : '';
+      body.set(`mp${i}`, `${mp.hostPath},mp=${mp.containerPath}${ro}`);
+    });
   }
 
   return proxmoxFetch<string>(`/nodes/${encodeURIComponent(node)}/lxc`, {

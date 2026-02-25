@@ -20,9 +20,17 @@
       <h3>Categories</h3>
       <p>Organize templates and community scripts into named categories.</p>
     </a>
+    <a href="/settings/personas" class="settings-card card">
+      <h3>Personas</h3>
+      <p>Define agent identities with roles, instructions, and avatars for Claude instances.</p>
+    </a>
     <a href="/settings/claude" class="settings-card card">
       <h3>Claude Code</h3>
       <p>Manage Claude Code authentication, view auth logs, and configure AI settings.</p>
+    </a>
+    <a href="/settings/github" class="settings-card card">
+      <h3>GitHub</h3>
+      <p>Configure a Personal Access Token for git push/pull operations in environments.</p>
     </a>
   </div>
 </div>

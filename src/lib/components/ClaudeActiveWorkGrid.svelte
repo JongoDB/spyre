@@ -11,6 +11,8 @@
 		};
 		currentTask: string | null;
 		plan: string | null;
+		personaAvatar: string | null;
+		personaRole: string | null;
 	}
 
 	let { items }: { items: ActiveWorkItem[] } = $props();
@@ -37,8 +39,17 @@
 		{#each items as item (item.task.id)}
 			<a href="/environments/{item.envId}?tab=claude" class="work-card card">
 				<div class="work-header">
-					<span class="env-name">{item.envName}</span>
-					<span class="badge badge-provisioning">{item.task.status}</span>
+					<span class="env-name">
+						{#if item.personaAvatar}
+							<span class="persona-avatar">{item.personaAvatar}</span>
+						{/if}
+						{item.envName}
+					</span>
+					{#if item.personaRole}
+						<span class="persona-role-tag">{item.personaRole}</span>
+					{:else}
+						<span class="badge badge-provisioning">{item.task.status}</span>
+					{/if}
 				</div>
 				<p class="prompt">{truncate(item.task.prompt, 100)}</p>
 				{#if item.currentTask}
@@ -123,5 +134,18 @@
 		font-size: 0.6875rem;
 		color: var(--text-secondary);
 		font-family: 'SF Mono', 'Fira Code', monospace;
+	}
+
+	.persona-avatar {
+		margin-right: 4px;
+	}
+
+	.persona-role-tag {
+		font-size: 0.6875rem;
+		padding: 2px 8px;
+		background: var(--bg-tertiary);
+		border-radius: 10px;
+		color: var(--text-secondary);
+		white-space: nowrap;
 	}
 </style>

@@ -4,6 +4,7 @@ import { getEnvConfig } from '$lib/server/env-config';
 import { listTemplates } from '$lib/server/templates';
 import { listScripts } from '$lib/server/community-scripts';
 import { listConfigs } from '$lib/server/config-store';
+import { listPersonas } from '$lib/server/personas';
 import type { ProxmoxStorageContent, ProxmoxStorage } from '$lib/types/proxmox';
 
 export const load: PageServerLoad = async ({ url }) => {
@@ -46,6 +47,9 @@ export const load: PageServerLoad = async ({ url }) => {
 	const preselectedConfig = url.searchParams.get('config') ?? '';
 	const preselectedTab = url.searchParams.get('tab') ?? '';
 
+	// Personas for persona selector
+	const personas = listPersonas();
+
 	return {
 		templates: osTemplates,
 		storageList,
@@ -56,6 +60,7 @@ export const load: PageServerLoad = async ({ url }) => {
 		communityQuery: communityQuery ?? '',
 		yamlConfigs,
 		preselectedConfig,
-		preselectedTab
+		preselectedTab,
+		personas
 	};
 };

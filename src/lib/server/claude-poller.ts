@@ -2,6 +2,8 @@ import { getDb } from './db';
 import { listEnvironments } from './environments';
 import { getConnection } from './ssh-pool';
 import { getActiveTaskForEnv } from './claude-bridge';
+import { getPersona } from './personas';
+import { listDevcontainers, devcontainerExec } from './devcontainers';
 import type { ClaudeProgress, ClaudeGitActivity, ClaudeEnvironmentLiveData } from '$lib/types/claude';
 
 // =============================================================================
@@ -157,11 +159,27 @@ async function poll(): Promise<void> {
 
           const activeTask = getActiveTaskForEnv(env.id);
 
+          // Look up persona from the environment's persona_id
+          let personaName: string | null = null;
+          let personaRole: string | null = null;
+          let personaAvatar: string | null = null;
+          if ((env as { persona_id?: string | null }).persona_id) {
+            const persona = getPersona((env as { persona_id: string }).persona_id);
+            if (persona) {
+              personaName = persona.name;
+              personaRole = persona.role;
+              personaAvatar = persona.avatar;
+            }
+          }
+
           return {
             envId: env.id,
             progress,
             gitActivity,
-            activeTask
+            activeTask,
+            personaName,
+            personaRole,
+            personaAvatar
           } as ClaudeEnvironmentLiveData;
         })
       );
@@ -171,6 +189,26 @@ async function poll(): Promise<void> {
           results.push(result.value);
         }
       }
+    }
+
+    // For docker-enabled environments, also poll devcontainer progress
+    for (const env of runningEnvs) {
+      if (!(env as { docker_enabled?: boolean }).docker_enabled) continue;
+      try {
+        const dcs = listDevcontainers(env.id).filter(dc => dc.status === 'running');
+        for (const dc of dcs) {
+          try {
+            const result = await devcontainerExec(dc.id, 'cat /workspace/.spyre/progress.json 2>/dev/null', 10000);
+            if (result.code === 0 && result.stdout.trim()) {
+              const db = getDb();
+              db.prepare(`
+                INSERT OR REPLACE INTO devcontainer_progress (devcontainer_id, progress, fetched_at)
+                VALUES (?, ?, datetime('now'))
+              `).run(dc.id, result.stdout.trim());
+            }
+          } catch { /* non-fatal per devcontainer */ }
+        }
+      } catch { /* non-fatal */ }
     }
 
     lastData = results;

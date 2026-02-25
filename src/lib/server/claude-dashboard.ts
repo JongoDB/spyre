@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { getPersona } from './personas';
 import type { ClaudeTask } from '$lib/types/claude';
 
 export interface ActiveWorkItem {
@@ -7,6 +8,8 @@ export interface ActiveWorkItem {
 	task: ClaudeTask;
 	currentTask: string | null;
 	plan: string | null;
+	personaAvatar: string | null;
+	personaRole: string | null;
 }
 
 export interface RecentActivityItem {
@@ -73,12 +76,14 @@ export function getActiveWork(): ActiveWorkItem[] {
 	const db = getDb();
 
 	const tasks = db.prepare(`
-		SELECT ct.*, e.name as env_name
+		SELECT ct.*, e.name as env_name, e.persona_id,
+			dc.persona_id as dc_persona_id, dc.service_name as dc_service_name
 		FROM claude_tasks ct
 		JOIN environments e ON ct.env_id = e.id
+		LEFT JOIN devcontainers dc ON ct.devcontainer_id = dc.id
 		WHERE ct.status IN ('pending', 'running')
 		ORDER BY ct.created_at DESC
-	`).all() as Array<ClaudeTask & { env_name: string }>;
+	`).all() as Array<ClaudeTask & { env_name: string; persona_id: string | null; dc_persona_id: string | null; dc_service_name: string | null }>;
 
 	return tasks.map(t => {
 		// Get progress data for this environment
@@ -98,12 +103,26 @@ export function getActiveWork(): ActiveWorkItem[] {
 			}
 		}
 
+		// Look up persona — prefer devcontainer persona over environment persona
+		const personaId = t.dc_persona_id ?? t.persona_id;
+		let personaAvatar: string | null = null;
+		let personaRole: string | null = null;
+		if (personaId) {
+			const persona = getPersona(personaId);
+			if (persona) {
+				personaAvatar = persona.avatar;
+				personaRole = persona.role;
+			}
+		}
+
 		return {
 			envId: t.env_id!,
-			envName: t.env_name,
+			envName: t.dc_service_name ? `${t.env_name} / ${t.dc_service_name}` : t.env_name,
 			task: t,
 			currentTask,
-			plan
+			plan,
+			personaAvatar,
+			personaRole
 		};
 	});
 }

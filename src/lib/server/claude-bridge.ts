@@ -4,8 +4,12 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import { getConnection } from './ssh-pool';
 import { getEnvironment } from './environments';
+import { getPersona } from './personas';
+import { getProgressForEnv } from './claude-poller';
 import { ensureAndPropagateAuth } from './claude-auth';
+import { getDevcontainer, getDevcontainerWithPersona, devcontainerExec, listDevcontainers } from './devcontainers';
 import type { ClaudeTask, ClaudeTaskEvent, ClaudeDispatchOptions } from '$lib/types/claude';
+import type { Persona } from '$lib/types/persona';
 
 // =============================================================================
 // Claude Bridge — Task Dispatch Engine
@@ -419,7 +423,7 @@ export function listTasks(filters?: { envId?: string; status?: string; limit?: n
 }
 
 export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: number }): Promise<string> {
-  const { envId, prompt, workingDir } = options;
+  const { envId, prompt, workingDir, devcontainerId } = options;
 
   // Validate environment
   const env = getEnvironment(envId);
@@ -427,21 +431,34 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
   if (env.status !== 'running') throw { code: 'INVALID_STATE', message: `Environment is ${env.status}, not running` };
   if (!env.ip_address) throw { code: 'INVALID_STATE', message: 'Environment has no IP address' };
 
+  // Validate devcontainer if specified
+  if (devcontainerId) {
+    const dc = getDevcontainer(devcontainerId);
+    if (!dc) throw { code: 'NOT_FOUND', message: 'Devcontainer not found' };
+    if (dc.status !== 'running') throw { code: 'INVALID_STATE', message: `Devcontainer is ${dc.status}, not running` };
+    if (dc.env_id !== envId) throw { code: 'INVALID_STATE', message: 'Devcontainer does not belong to this environment' };
+  }
+
   // Check concurrent limit
   if (activeTasks.size >= MAX_CONCURRENT_TASKS) {
     throw { code: 'RATE_LIMITED', message: `Maximum ${MAX_CONCURRENT_TASKS} concurrent tasks reached` };
   }
 
-  // Check no active task for this env
+  // Check no active task for this env (or devcontainer)
   const existing = getActiveTaskForEnv(envId);
   if (existing && (existing.status === 'running' || existing.status === 'pending')) {
-    throw { code: 'ALREADY_RUNNING', message: 'An active task is already running in this environment' };
+    // For devcontainer dispatch, allow if the existing task is for a different devcontainer
+    if (!devcontainerId || existing.devcontainer_id === devcontainerId) {
+      throw { code: 'ALREADY_RUNNING', message: 'An active task is already running in this environment' };
+    }
   }
 
-  // Verify Claude is installed
-  const installed = await verifyClaudeInstalled(envId);
-  if (!installed) {
-    throw { code: 'NOT_INSTALLED', message: 'Claude CLI is not installed in this environment' };
+  // Verify Claude is installed (in the env or devcontainer)
+  if (!devcontainerId) {
+    const installed = await verifyClaudeInstalled(envId);
+    if (!installed) {
+      throw { code: 'NOT_INSTALLED', message: 'Claude CLI is not installed in this environment' };
+    }
   }
 
   // Create task record
@@ -449,12 +466,16 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
   const db = getDb();
   const maxRetries = options.maxRetries ?? 0;
   db.prepare(`
-    INSERT INTO claude_tasks (id, env_id, prompt, status, max_retries, created_at)
-    VALUES (?, ?, ?, 'pending', ?, datetime('now'))
-  `).run(taskId, envId, prompt, maxRetries);
+    INSERT INTO claude_tasks (id, env_id, prompt, status, max_retries, devcontainer_id, created_at)
+    VALUES (?, ?, ?, 'pending', ?, ?, datetime('now'))
+  `).run(taskId, envId, prompt, maxRetries, devcontainerId ?? null);
 
-  // Start async execution
-  executeTask(taskId, envId, prompt, workingDir).catch((err) => {
+  // Route to devcontainer or direct execution
+  const execPromise = devcontainerId
+    ? executeDevcontainerTask(taskId, envId, devcontainerId, prompt, workingDir)
+    : executeTask(taskId, envId, prompt, workingDir);
+
+  execPromise.catch((err) => {
     console.error(`[spyre] Task ${taskId} execution error:`, err);
     try {
       updateTask(taskId, {
@@ -471,6 +492,66 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
   });
 
   return taskId;
+}
+
+/**
+ * Build a framed prompt that wraps the user's raw prompt with persona context
+ * and current progress state. Returns raw prompt unchanged when no persona.
+ */
+function buildFramedPrompt(
+  rawPrompt: string,
+  envId: string,
+  persona: Persona | null,
+  projectContext?: { repoUrl?: string | null; gitBranch?: string; projectDir?: string } | null
+): string {
+  if (!persona && !projectContext) return rawPrompt;
+
+  const parts: string[] = [];
+
+  if (persona) {
+    parts.push(`You are ${persona.name}, a ${persona.role}.`);
+    parts.push('');
+
+    // Include a brief reminder of instructions (CLAUDE.md has the full version)
+    if (persona.instructions.trim()) {
+      const brief = persona.instructions.length > 500
+        ? persona.instructions.slice(0, 500) + '...'
+        : persona.instructions;
+      parts.push(brief);
+      parts.push('');
+    }
+  }
+
+  // Include project context if available
+  if (projectContext?.repoUrl || projectContext?.projectDir) {
+    parts.push('## Project Context');
+    parts.push(`- Project dir: ${projectContext.projectDir ?? '/project'}`);
+    parts.push(`- Repository: ${projectContext.repoUrl ?? 'local'}`);
+    parts.push(`- Branch: ${projectContext.gitBranch ?? 'main'}`);
+    parts.push('');
+  }
+
+  // Include current progress state if available
+  const progress = getProgressForEnv(envId);
+  if (progress) {
+    parts.push('## Current State');
+    if (progress.current_task) {
+      parts.push(`- Last activity: ${progress.current_task}`);
+    }
+    if (progress.blockers.length > 0) {
+      parts.push(`- Blockers: ${progress.blockers.join(', ')}`);
+    }
+    const activePhase = progress.phases.find(p => p.status === 'in_progress');
+    if (activePhase) {
+      parts.push(`- Active phase: ${activePhase.name}${activePhase.detail ? ': ' + activePhase.detail : ''}`);
+    }
+    parts.push('');
+  }
+
+  parts.push('## Task');
+  parts.push(rawPrompt);
+
+  return parts.join('\n');
 }
 
 async function executeTask(
@@ -512,10 +593,18 @@ async function executeTask(
 
     const client = await getConnection(envId);
 
+    // Look up persona and project context for prompt framing
+    const env = getEnvironment(envId);
+    const persona = env?.persona_id ? getPersona(env.persona_id) ?? null : null;
+    const projectContext = env?.repo_url || env?.project_dir
+      ? { repoUrl: env.repo_url, gitBranch: env.git_branch, projectDir: env.project_dir }
+      : null;
+    const framedPrompt = buildFramedPrompt(prompt, envId, persona, projectContext);
+
     // Build the claude command.
     // - Use CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 to skip telemetry/update checks
     // - Use --allowedTools instead of --dangerously-skip-permissions (which fails as root)
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const escapedPrompt = framedPrompt.replace(/'/g, "'\\''");
     const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
     const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
     const cdPart = workingDir ? `cd '${workingDir.replace(/'/g, "'\\''")}' && ` : '';
@@ -778,6 +867,145 @@ async function executeTask(
       error: errCat.message,
       error_code: errCat.code
     });
+  }
+}
+
+/**
+ * Execute a task inside a devcontainer via SSH → docker exec.
+ * Similar to executeTask but routes through docker exec instead of direct SSH.
+ */
+async function executeDevcontainerTask(
+  taskId: string,
+  envId: string,
+  devcontainerId: string,
+  prompt: string,
+  workingDir?: string
+): Promise<void> {
+  const config = getEnvConfig();
+  const taskTimeout = config.claude?.task_timeout ?? 600000;
+
+  updateTask(taskId, { status: 'running', started_at: new Date().toISOString() });
+
+  const taskState = { taskId, envId, channel: null as { close: () => void } | null, aborted: false };
+  activeTasks.set(taskId, taskState);
+
+  let accumulatedOutput = '';
+  const parser = new StreamJsonParser();
+  const tracked = setupStreamParsing(taskId, parser);
+
+  try {
+    const dc = getDevcontainerWithPersona(devcontainerId);
+    if (!dc) throw new Error(`Devcontainer ${devcontainerId} not found`);
+
+    // Build framed prompt with devcontainer persona context
+    const env = getEnvironment(envId);
+    const persona = dc.persona_id ? getPersona(dc.persona_id) ?? null : null;
+    const projectContext = env?.repo_url || env?.project_dir
+      ? { repoUrl: env.repo_url, gitBranch: env.git_branch, projectDir: env.project_dir }
+      : null;
+
+    // Build prompt with awareness of sibling agents
+    let framedPrompt: string;
+    if (persona || projectContext) {
+      const parts: string[] = [];
+      if (persona) {
+        parts.push(`You are ${persona.name}, a ${persona.role}.`);
+        parts.push('');
+      }
+      if (projectContext) {
+        parts.push('## Project Context');
+        parts.push(`- Working dir: ${dc.working_dir}`);
+        parts.push(`- Repository: ${projectContext.repoUrl ?? 'local'}`);
+        parts.push(`- Branch: ${projectContext.gitBranch ?? 'main'}`);
+        parts.push('');
+      }
+      // Sibling agents info
+      const siblings = listDevcontainers(envId).filter(d => d.id !== devcontainerId);
+      if (siblings.length > 0) {
+        parts.push('## Other Active Agents');
+        for (const s of siblings) {
+          parts.push(`- ${s.persona_name ?? s.service_name} (${s.persona_role ?? 'agent'})`);
+        }
+        parts.push('');
+      }
+      parts.push('## Task');
+      parts.push(prompt);
+      framedPrompt = parts.join('\n');
+    } else {
+      framedPrompt = prompt;
+    }
+
+    // Build the docker exec command
+    const escapedPrompt = framedPrompt.replace(/'/g, "'\\''");
+    const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
+    const cdPart = workingDir ? `cd '${workingDir.replace(/'/g, "'\\''")}' && ` : '';
+    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --allowedTools '${allowedTools}'`;
+    const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
+    const innerCmd = `${envExports} script -qc "${claudeInvocation.replace(/"/g, '\\"')}" /dev/null`;
+    const escaped = innerCmd.replace(/'/g, "'\\''");
+    const dockerCmd = `docker exec ${dc.container_name} bash -c '${escaped}'`;
+
+    // Execute via SSH to the LXC
+    const client = await getConnection(envId);
+    const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        taskState.aborted = true;
+        if (taskState.channel) { try { taskState.channel.close(); } catch { /* ignore */ } }
+        reject(new Error(`Task timed out after ${taskTimeout}ms`));
+      }, taskTimeout);
+
+      client.exec(dockerCmd, (err, stream) => {
+        if (err) { clearTimeout(timer); reject(err); return; }
+        taskState.channel = stream;
+        let stdout = '';
+        let stderr = '';
+
+        stream.on('data', (data: Buffer) => {
+          const chunk = data.toString();
+          stdout += chunk;
+          accumulatedOutput += chunk;
+          parser.feed(chunk);
+          emitter.emit(`task:${taskId}:output`, { type: 'output', data: chunk, taskId });
+        });
+        stream.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+        stream.on('close', (code: number) => { clearTimeout(timer); resolve({ code: code ?? 0, stdout, stderr }); });
+        stream.on('error', (e: Error) => { clearTimeout(timer); reject(e); });
+      });
+    });
+
+    parser.flush();
+    activeTasks.delete(taskId);
+    if (taskState.aborted) return;
+
+    const parsedResult = tracked.parsedResult.value ?? result.stdout;
+    const costUsd = tracked.costUsd.value;
+    const sessionId = tracked.sessionId.value;
+
+    if (result.code === 0) {
+      updateTask(taskId, {
+        status: 'complete', result: parsedResult, cost_usd: costUsd,
+        session_id: sessionId, output: accumulatedOutput, completed_at: new Date().toISOString()
+      });
+      emitter.emit(`task:${taskId}:complete`, { taskId, status: 'complete', result: parsedResult, cost_usd: costUsd });
+    } else {
+      const errCat = categorizeError(result.code, result.stderr, result.stdout);
+      updateTask(taskId, {
+        status: errCat.status, result: parsedResult, error_message: errCat.message,
+        error_code: errCat.code, cost_usd: costUsd, session_id: sessionId,
+        output: accumulatedOutput, completed_at: new Date().toISOString()
+      });
+      emitter.emit(`task:${taskId}:complete`, { taskId, status: errCat.status, error: errCat.message });
+    }
+  } catch (err) {
+    parser.flush();
+    activeTasks.delete(taskId);
+    const message = err instanceof Error ? err.message : String(err);
+    const errCat = categorizeError(1, message, '');
+    updateTask(taskId, {
+      status: errCat.status, error_message: errCat.message, error_code: errCat.code,
+      output: accumulatedOutput, completed_at: new Date().toISOString()
+    });
+    emitter.emit(`task:${taskId}:complete`, { taskId, status: errCat.status, error: errCat.message });
   }
 }
 

@@ -3,6 +3,7 @@
 	import type { PageData } from './$types';
 	import type { Environment } from '$lib/types/environment';
 	import type { ClaudeProgress, ClaudeGitActivity, ClaudeTask, ClaudeTaskQueueItem, ClaudeEnvironmentLiveData } from '$lib/types/claude';
+	import type { DevcontainerWithPersona } from '$lib/types/devcontainer';
 	import TerminalTabs from '$lib/components/TerminalTabs.svelte';
 	import ResourceBar from '$lib/components/ResourceBar.svelte';
 	import ProvisioningProgressComponent from '$lib/components/ProvisioningProgress.svelte';
@@ -83,6 +84,98 @@
 	let claudeTaskHistory = $state<ClaudeTask[]>(data.claude?.taskHistory ?? []);
 	let claudeQueueItems = $state<ClaudeTaskQueueItem[]>((data.claude?.queueItems ?? []) as ClaudeTaskQueueItem[]);
 	let activeTab = $state<'terminal' | 'claude'>('terminal');
+
+	// Devcontainer state (docker multi-agent mode)
+	let devcontainers = $state<DevcontainerWithPersona[]>(data.devcontainers ?? []);
+	let addingAgent = $state(false);
+	let addAgentPersonaId = $state('');
+	let showAddAgent = $state(false);
+	let dcDispatchId = $state('');
+	let dcDispatchPrompt = $state('');
+	let dcDispatching = $state(false);
+
+	async function refreshDevcontainers() {
+		try {
+			const res = await fetch(`/api/devcontainers?envId=${env.id}`);
+			if (res.ok) devcontainers = await res.json();
+		} catch { /* ignore */ }
+	}
+
+	async function addDevcontainer() {
+		if (!addAgentPersonaId || addingAgent) return;
+		addingAgent = true;
+		try {
+			const res = await fetch('/api/devcontainers', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ env_id: env.id, persona_id: addAgentPersonaId })
+			});
+			if (res.ok) {
+				addToast('Agent created', 'success');
+				showAddAgent = false;
+				addAgentPersonaId = '';
+				await refreshDevcontainers();
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to create agent', 'error');
+			}
+		} catch {
+			addToast('Network error', 'error');
+		} finally {
+			addingAgent = false;
+		}
+	}
+
+	async function dcAction(dcId: string, action: 'start' | 'stop' | 'rebuild') {
+		try {
+			const res = await fetch(`/api/devcontainers/${dcId}/${action}`, { method: 'POST' });
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? `Failed to ${action}`, 'error');
+			}
+			await refreshDevcontainers();
+		} catch {
+			addToast(`Network error during ${action}`, 'error');
+		}
+	}
+
+	async function dcDelete(dcId: string) {
+		try {
+			const res = await fetch(`/api/devcontainers/${dcId}`, { method: 'DELETE' });
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to remove agent', 'error');
+			}
+			await refreshDevcontainers();
+		} catch {
+			addToast('Network error', 'error');
+		}
+	}
+
+	async function dispatchToDevcontainer() {
+		if (!dcDispatchId || !dcDispatchPrompt.trim() || dcDispatching) return;
+		dcDispatching = true;
+		try {
+			const res = await fetch(`/api/devcontainers/${dcDispatchId}/dispatch`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ prompt: dcDispatchPrompt.trim() })
+			});
+			if (res.ok) {
+				addToast('Task dispatched', 'success');
+				dcDispatchPrompt = '';
+				dcDispatchId = '';
+				setTimeout(refreshClaudeData, 2000);
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to dispatch', 'error');
+			}
+		} catch {
+			addToast('Network error', 'error');
+		} finally {
+			dcDispatching = false;
+		}
+	}
 
 	// Claude SSE
 	let claudeEventSource: EventSource | null = null;
@@ -326,6 +419,23 @@
 				<span class="info-label">Node</span>
 				<span class="info-value">{env.node}</span>
 			</div>
+			{#if env.docker_enabled}
+				<div class="info-divider"></div>
+				<div class="info-item">
+					<span class="info-label">Mode</span>
+					<span class="info-value"><span class="docker-tag">Docker Multi-Agent</span></span>
+				</div>
+				{#if env.repo_url}
+					<div class="info-item">
+						<span class="info-label">Repo</span>
+						<span class="info-value"><code>{env.repo_url}</code></span>
+					</div>
+				{/if}
+				<div class="info-item">
+					<span class="info-label">Branch</span>
+					<span class="info-value"><code>{env.git_branch ?? 'main'}</code></span>
+				</div>
+			{/if}
 			{#if env.ip_address}
 				<div class="info-divider"></div>
 				<div class="info-item">
@@ -415,42 +525,158 @@
 		</div>
 	{:else if env.status === 'running' && env.ip_address && activeTab === 'claude'}
 		<div class="claude-section">
-			<!-- Dispatch -->
-			<div class="claude-card card">
-				<h3>Dispatch Task</h3>
-				<ClaudeDispatch
-					envId={env.id}
-					activeTask={claudeActiveTask}
-					onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
-					onTaskCompleted={() => { refreshClaudeData(); }}
-				/>
-			</div>
-
-			<div class="claude-grid">
-				<!-- Progress -->
-				<div class="claude-card card">
-					<h3>Progress</h3>
-					<ClaudeProgressComponent progress={claudeProgress} />
+			{#if env.docker_enabled}
+				<!-- Docker Multi-Agent Mode -->
+				<div class="agent-header">
+					<h3>Agents</h3>
+					<button class="btn btn-primary btn-sm" onclick={() => showAddAgent = !showAddAgent}>
+						{showAddAgent ? 'Cancel' : '+ Add Agent'}
+					</button>
 				</div>
 
-				<!-- Git Activity -->
-				<div class="claude-card card">
-					<h3>Git Activity</h3>
-					<ClaudeGitActivityComponent activity={claudeGitActivity} />
+				{#if showAddAgent}
+					<div class="add-agent-form card">
+						<div class="form-group">
+							<label for="agent-persona">Persona</label>
+							<select id="agent-persona" class="form-select" bind:value={addAgentPersonaId}>
+								<option value="" disabled>Select a persona</option>
+								{#each data.personas ?? [] as p}
+									<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
+								{/each}
+							</select>
+						</div>
+						<button class="btn btn-primary btn-sm" disabled={!addAgentPersonaId || addingAgent} onclick={addDevcontainer}>
+							{addingAgent ? 'Creating...' : 'Create Agent'}
+						</button>
+					</div>
+				{/if}
+
+				{#if devcontainers.length > 0}
+					<div class="agent-grid">
+						{#each devcontainers as dc (dc.id)}
+							<div class="agent-card card">
+								<div class="agent-card-header">
+									<div class="agent-identity">
+										{#if dc.persona_avatar}
+											<span class="agent-avatar">{dc.persona_avatar}</span>
+										{/if}
+										<div>
+											<div class="agent-name">{dc.persona_name ?? dc.service_name}</div>
+											{#if dc.persona_role}
+												<div class="agent-role">{dc.persona_role}</div>
+											{/if}
+										</div>
+									</div>
+									<span class="badge badge-{dc.status}">{dc.status}</span>
+								</div>
+								<div class="agent-service">
+									<code>{dc.service_name}</code>
+								</div>
+								{#if dc.error_message}
+									<div class="agent-error">{dc.error_message}</div>
+								{/if}
+								<div class="agent-actions">
+									{#if dc.status === 'running'}
+										<button class="btn btn-sm btn-secondary" onclick={() => { dcDispatchId = dc.id; }}>Dispatch</button>
+										<button class="btn btn-sm btn-danger" onclick={() => dcAction(dc.id, 'stop')}>Stop</button>
+									{:else if dc.status === 'stopped'}
+										<button class="btn btn-sm btn-primary" onclick={() => dcAction(dc.id, 'start')}>Start</button>
+									{/if}
+									<button class="btn btn-sm btn-secondary" onclick={() => dcAction(dc.id, 'rebuild')}>Rebuild</button>
+									<button class="btn btn-sm btn-danger" onclick={() => dcDelete(dc.id)}>Remove</button>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<div class="empty-agents card">
+						<p>No agents yet. Add an agent to get started with multi-agent development.</p>
+					</div>
+				{/if}
+
+				<!-- Dispatch to devcontainer -->
+				{#if dcDispatchId}
+					{@const targetDc = devcontainers.find(d => d.id === dcDispatchId)}
+					<div class="dc-dispatch-section card">
+						<div class="dispatch-header">
+							<h3>Dispatch to {targetDc?.persona_name ?? targetDc?.service_name}</h3>
+							<button class="btn btn-sm btn-secondary" onclick={() => dcDispatchId = ''}>Cancel</button>
+						</div>
+						<div class="dc-dispatch-form">
+							<textarea
+								class="form-input"
+								placeholder="Enter task prompt..."
+								bind:value={dcDispatchPrompt}
+								rows="3"
+							></textarea>
+							<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
+								{dcDispatching ? 'Dispatching...' : 'Dispatch'}
+							</button>
+						</div>
+					</div>
+				{/if}
+
+				<!-- Shared Git Activity & Progress -->
+				<div class="claude-grid">
+					<div class="claude-card card">
+						<h3>Progress</h3>
+						<ClaudeProgressComponent progress={claudeProgress} />
+					</div>
+					<div class="claude-card card">
+						<h3>Git Activity</h3>
+						<ClaudeGitActivityComponent activity={claudeGitActivity} />
+					</div>
 				</div>
-			</div>
 
-			<!-- Task Queue -->
-			<div class="claude-card card">
-				<h3>Task Queue</h3>
-				<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
-			</div>
+				<div class="claude-card card">
+					<h3>Task Queue</h3>
+					<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
+				</div>
 
-			<!-- Task History -->
-			<div class="claude-card card">
-				<h3>Task History</h3>
-				<ClaudeTaskHistory tasks={claudeTaskHistory} />
-			</div>
+				<div class="claude-card card">
+					<h3>Task History</h3>
+					<ClaudeTaskHistory tasks={claudeTaskHistory} />
+				</div>
+			{:else}
+				<!-- Standard single-agent mode -->
+				<div class="claude-card card">
+					<div class="dispatch-header">
+						<h3>Dispatch Task</h3>
+						{#if data.persona}
+							<span class="persona-badge" title="{data.persona.name} — {data.persona.role}">
+								{data.persona.avatar} {data.persona.role}
+							</span>
+						{/if}
+					</div>
+					<ClaudeDispatch
+						envId={env.id}
+						activeTask={claudeActiveTask}
+						onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
+						onTaskCompleted={() => { refreshClaudeData(); }}
+					/>
+				</div>
+
+				<div class="claude-grid">
+					<div class="claude-card card">
+						<h3>Progress</h3>
+						<ClaudeProgressComponent progress={claudeProgress} />
+					</div>
+					<div class="claude-card card">
+						<h3>Git Activity</h3>
+						<ClaudeGitActivityComponent activity={claudeGitActivity} />
+					</div>
+				</div>
+
+				<div class="claude-card card">
+					<h3>Task Queue</h3>
+					<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
+				</div>
+
+				<div class="claude-card card">
+					<h3>Task History</h3>
+					<ClaudeTaskHistory tasks={claudeTaskHistory} />
+				</div>
+			{/if}
 		</div>
 	{:else if env.status === 'running' && !env.ip_address}
 		<div class="terminal-placeholder card">
@@ -746,6 +972,22 @@
 		padding: 16px 20px;
 	}
 
+	.dispatch-header {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-bottom: 4px;
+	}
+	.dispatch-header h3 { margin-bottom: 0; }
+	.persona-badge {
+		font-size: 0.75rem;
+		padding: 2px 10px;
+		background: var(--bg-tertiary);
+		border-radius: 10px;
+		color: var(--text-secondary);
+		white-space: nowrap;
+	}
+
 	.claude-card h3 {
 		font-size: 0.875rem;
 		font-weight: 600;
@@ -839,6 +1081,143 @@
 
 	@keyframes spin {
 		to { transform: rotate(360deg); }
+	}
+
+	.docker-tag {
+		font-size: 0.6875rem;
+		font-weight: 600;
+		padding: 2px 8px;
+		background-color: rgba(34, 197, 94, 0.12);
+		color: #22c55e;
+		border-radius: 3px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	/* ---- Agent Grid (Docker Multi-Agent) ---- */
+
+	.agent-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 4px;
+	}
+
+	.agent-header h3 {
+		font-size: 0.9375rem;
+		font-weight: 600;
+		margin: 0;
+	}
+
+	.add-agent-form {
+		display: flex;
+		align-items: flex-end;
+		gap: 12px;
+		padding: 16px 20px;
+	}
+
+	.add-agent-form .form-group {
+		flex: 1;
+		margin: 0;
+	}
+
+	.add-agent-form label {
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		margin-bottom: 4px;
+		display: block;
+	}
+
+	.agent-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+		gap: 12px;
+	}
+
+	.agent-card {
+		padding: 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.agent-card-header {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.agent-identity {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+
+	.agent-avatar {
+		font-size: 1.5rem;
+	}
+
+	.agent-name {
+		font-weight: 600;
+		font-size: 0.875rem;
+	}
+
+	.agent-role {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+	}
+
+	.agent-service code {
+		font-size: 0.6875rem;
+		color: var(--text-secondary);
+		background-color: rgba(255, 255, 255, 0.04);
+		padding: 2px 6px;
+		border-radius: 3px;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+	}
+
+	.agent-error {
+		font-size: 0.75rem;
+		color: var(--error);
+		background-color: rgba(239, 68, 68, 0.08);
+		padding: 6px 10px;
+		border-radius: var(--radius-sm);
+	}
+
+	.agent-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: auto;
+	}
+
+	.empty-agents {
+		text-align: center;
+		padding: 32px 20px;
+		color: var(--text-secondary);
+		font-size: 0.875rem;
+	}
+
+	.dc-dispatch-section {
+		padding: 16px 20px;
+	}
+
+	.dc-dispatch-form {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		margin-top: 8px;
+	}
+
+	.dc-dispatch-form textarea {
+		resize: vertical;
+		min-height: 60px;
+	}
+
+	.dc-dispatch-form .btn {
+		align-self: flex-end;
 	}
 
 </style>

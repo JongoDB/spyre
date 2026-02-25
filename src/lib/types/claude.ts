@@ -35,6 +35,7 @@ export interface ClaudeTask {
   max_retries: number;
   error_code: string | null;
   parent_task_id: string | null;
+  devcontainer_id: string | null;
 }
 
 /** Structured event stored in DB and sent to WebSocket clients */
@@ -103,6 +104,7 @@ export interface ClaudeDispatchOptions {
   envId: string;
   prompt: string;
   workingDir?: string;
+  devcontainerId?: string;
 }
 
 export interface ClaudeStreamEvent {
@@ -116,4 +118,7 @@ export interface ClaudeEnvironmentLiveData {
   progress: ClaudeProgress | null;
   gitActivity: ClaudeGitActivity | null;
   activeTask: ClaudeTask | null;
+  personaName: string | null;
+  personaRole: string | null;
+  personaAvatar: string | null;
 }

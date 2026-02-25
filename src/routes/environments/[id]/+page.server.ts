@@ -6,6 +6,8 @@ import { getDb } from '$lib/server/db';
 import { getActiveTaskForEnv, listTasks } from '$lib/server/claude-bridge';
 import { getProgressForEnv, getGitActivityForEnv } from '$lib/server/claude-poller';
 import { getProvisioningProgress } from '$lib/server/provisioning-log';
+import { getPersona, listPersonas } from '$lib/server/personas';
+import { listDevcontainers } from '$lib/server/devcontainers';
 
 export const load: PageServerLoad = async ({ params }) => {
   let env = getEnvironment(params.id);
@@ -55,10 +57,22 @@ export const load: PageServerLoad = async ({ params }) => {
     ? getProvisioningProgress(params.id)
     : null;
 
+  // Look up persona if assigned
+  const persona = env.persona_id ? getPersona(env.persona_id) ?? null : null;
+
+  // Load devcontainers for docker-enabled environments
+  const devcontainers = env.docker_enabled ? listDevcontainers(env.id) : [];
+
+  // Load personas list for docker-enabled environments (needed for "Add Agent" form)
+  const personas = env.docker_enabled ? listPersonas() : [];
+
   return {
     environment: env,
     metadata,
     provisioningProgress,
+    persona,
+    devcontainers,
+    personas,
     claude: {
       activeTask,
       taskHistory,

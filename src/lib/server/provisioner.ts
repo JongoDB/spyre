@@ -5,6 +5,7 @@ import { resolveInstructionsForOs } from './software-repo';
 import { getScript } from './community-scripts';
 import { getEnvConfig } from './env-config';
 import type { SoftwarePoolItem } from '$lib/types/template';
+import type { Persona } from '$lib/types/persona';
 
 // =============================================================================
 // Types
@@ -398,12 +399,12 @@ export async function createDefaultUser(
 // Spyre Tracking Injection
 // =============================================================================
 
-const SPYRE_CLAUDE_MD = `# Spyre Progress Tracking
+const SPYRE_PROGRESS_TRACKING = `## Spyre Progress Tracking
 
 This environment is managed by Spyre. Maintain \`.spyre/progress.json\` to provide
 visibility into your work.
 
-## Rules
+### Rules
 
 1. Update \`.spyre/progress.json\` after completing each significant step
 2. Keep \`current_task\` updated with what you are actively doing
@@ -412,7 +413,7 @@ visibility into your work.
 5. Update \`metrics\` with files_changed, tests_passing, tests_failing when applicable
 6. Always update \`updated_at\` with current ISO timestamp
 
-## progress.json Schema
+### progress.json Schema
 
 \`\`\`json
 {
@@ -427,13 +428,63 @@ visibility into your work.
 }
 \`\`\`
 
-## When to Update
+### When to Update
 
 - Starting work: set \`plan\`, add phases as \`pending\`, set first to \`in_progress\`
 - Completing a phase: set to \`completed\`, advance next to \`in_progress\`
 - Encountering a problem: add to \`blockers\`, set phase to \`error\` with detail
 - After running tests: update \`metrics.tests_passing\` and \`metrics.tests_failing\`
 `;
+
+/**
+ * Build the full CLAUDE.md content for an environment.
+ * When a persona is assigned, its instructions come first, followed by the standard
+ * progress tracking section. When no persona, just the progress tracking rules.
+ */
+/**
+ * Build the CLAUDE.md content for an environment or devcontainer.
+ * Supports optional project context (repo URL, branch, project dir).
+ */
+function buildClaudeMd(
+  persona: Persona | null,
+  projectContext?: { repoUrl?: string | null; gitBranch?: string; projectDir?: string } | null
+): string {
+  const parts: string[] = [];
+
+  if (persona) {
+    parts.push(`# ${persona.name} — ${persona.role}`);
+    parts.push('');
+    if (persona.instructions.trim()) {
+      parts.push(persona.instructions);
+      parts.push('');
+      parts.push('---');
+      parts.push('');
+    }
+  } else {
+    parts.push('# Spyre Agent');
+    parts.push('');
+  }
+
+  if (projectContext?.repoUrl || projectContext?.projectDir) {
+    parts.push('## Project');
+    parts.push('');
+    parts.push(`This environment has a project at \`${projectContext.projectDir ?? '/project'}\`.`);
+    parts.push('All work should be done within this directory unless specified otherwise.');
+    parts.push('');
+    parts.push(`Repository: ${projectContext.repoUrl ?? 'Local repository'}`);
+    parts.push(`Branch: ${projectContext.gitBranch ?? 'main'}`);
+    parts.push('');
+    parts.push('**Important**: Other agents may also be working in this directory.');
+    parts.push('Always pull before starting work and commit frequently.');
+    parts.push('');
+    parts.push('---');
+    parts.push('');
+  }
+
+  parts.push(SPYRE_PROGRESS_TRACKING);
+
+  return parts.join('\n');
+}
 
 const EMPTY_PROGRESS = JSON.stringify({
   plan: null,
@@ -447,10 +498,15 @@ const EMPTY_PROGRESS = JSON.stringify({
 /**
  * Inject .spyre/ tracking directory and CLAUDE.md into an environment.
  * Does NOT install Claude CLI or propagate credentials — use installClaudeInEnvironment() for that.
+ *
+ * When a persona is provided, CLAUDE.md includes the persona's instructions
+ * and a .spyre/persona.json metadata file is written for the poller.
  */
 export async function injectSpyreTracking(
   exec: ProvisionerContext['exec'],
-  workingDir?: string
+  workingDir?: string,
+  persona?: Persona | null,
+  projectContext?: { repoUrl?: string | null; gitBranch?: string; projectDir?: string } | null
 ): Promise<void> {
   const baseDir = workingDir ?? '/root';
 
@@ -462,11 +518,31 @@ export async function injectSpyreTracking(
   const writeProgress = `cat > '${progressPath}' << 'SPYRE_PROGRESS_EOF'\n${EMPTY_PROGRESS}\nSPYRE_PROGRESS_EOF`;
   await exec(writeProgress, 10000);
 
-  // Write/append CLAUDE.md with tracking instructions
+  // Write CLAUDE.md with persona instructions + project context + tracking rules
+  const claudeMdContent = buildClaudeMd(persona ?? null, projectContext ?? null);
   const claudeMdPath = `${baseDir}/CLAUDE.md`;
-  // Escape the content for heredoc
-  const writeMd = `cat >> '${claudeMdPath}' << 'SPYRE_CLAUDEMD_EOF'\n${SPYRE_CLAUDE_MD}\nSPYRE_CLAUDEMD_EOF`;
+  const writeMd = `cat >> '${claudeMdPath}' << 'SPYRE_CLAUDEMD_EOF'\n${claudeMdContent}\nSPYRE_CLAUDEMD_EOF`;
   await exec(writeMd, 10000);
+
+  // Write persona metadata for the poller to read
+  if (persona) {
+    const personaMeta = JSON.stringify({ name: persona.name, role: persona.role, avatar: persona.avatar }, null, 2);
+    const personaPath = `${baseDir}/.spyre/persona.json`;
+    const writePersona = `cat > '${personaPath}' << 'SPYRE_PERSONA_EOF'\n${personaMeta}\nSPYRE_PERSONA_EOF`;
+    await exec(writePersona, 10000);
+  }
+
+  // Write project metadata
+  if (projectContext?.repoUrl || projectContext?.projectDir) {
+    const projectMeta = JSON.stringify({
+      repo_url: projectContext.repoUrl ?? null,
+      git_branch: projectContext.gitBranch ?? 'main',
+      project_dir: projectContext.projectDir ?? '/project'
+    }, null, 2);
+    const projectPath = `${baseDir}/.spyre/project.json`;
+    const writeProject = `cat > '${projectPath}' << 'SPYRE_PROJECT_EOF'\n${projectMeta}\nSPYRE_PROJECT_EOF`;
+    await exec(writeProject, 10000);
+  }
 }
 
 /**

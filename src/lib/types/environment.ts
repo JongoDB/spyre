@@ -14,6 +14,11 @@ export interface Environment {
   updated_at: string;
   last_accessed: string | null;
   metadata: string | null;
+  persona_id: string | null;
+  docker_enabled: boolean;
+  repo_url: string | null;
+  git_branch: string;
+  project_dir: string;
 }
 
 export interface Service {
@@ -53,4 +58,9 @@ export interface CreateEnvironmentRequest {
   custom_script?: string;
   install_claude?: boolean;
   config_name?: string;
+  persona_id?: string;
+  docker_enabled?: boolean;
+  repo_url?: string;
+  git_branch?: string;
+  project_dir?: string;
 }

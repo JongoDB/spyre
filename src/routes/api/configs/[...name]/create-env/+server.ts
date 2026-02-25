@@ -14,7 +14,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		throw error(400, 'Config name is required.');
 	}
 
-	let body: { name: string; install_claude?: boolean };
+	let body: { name: string; install_claude?: boolean; persona_id?: string };
 	try {
 		body = await request.json();
 	} catch {
@@ -33,6 +33,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		const req = configToCreateRequest(resolvedConfig, body.name.trim());
 		if (body.install_claude !== undefined) {
 			req.install_claude = body.install_claude;
+		}
+		if (body.persona_id) {
+			req.persona_id = body.persona_id;
 		}
 
 		// Create the environment

@@ -9,6 +9,9 @@ import { getScript } from './community-scripts';
 import { runPipeline, injectSpyreTracking, installClaudeInEnvironment } from './provisioner';
 import type { ProvisionerContext } from './provisioner';
 import { broadcastProvisioningEvent } from './provisioning-events';
+import { getPersona } from './personas';
+import { propagateGitHubAuth } from './github-auth';
+import { ensureDockerInstalled } from './devcontainers';
 import type { Environment, CreateEnvironmentRequest } from '$lib/types/environment';
 import type { CommunityScript, CommunityScriptInstallMethod } from '$lib/types/community-script';
 
@@ -671,12 +674,58 @@ async function createViaCommunityScript(
     // Non-fatal — container is created and the app is installed
   }
 
+  const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
+
+  // Docker provisioning for community-script environments
+  if (req.docker_enabled) {
+    try {
+      await ensureDockerInstalled(id);
+    } catch (dockerErr) {
+      console.warn('[spyre] Docker installation failed (non-fatal):', dockerErr);
+    }
+  }
+
+  // Project directory setup
+  const projectDir = req.project_dir ?? '/project';
+  if (req.repo_url || req.docker_enabled) {
+    try {
+      await ctx.exec(`mkdir -p '${projectDir}'`, 10000);
+      if (req.repo_url) {
+        const gitBranch = req.git_branch ?? 'main';
+        await ctx.exec(
+          `git clone --branch '${gitBranch}' '${req.repo_url}' '${projectDir}' 2>&1 || ` +
+          `(cd '${projectDir}' && git init && git remote add origin '${req.repo_url}' && git fetch origin '${gitBranch}' && git checkout -b '${gitBranch}' 'origin/${gitBranch}' 2>&1)`,
+          120000
+        );
+      } else {
+        await ctx.exec(`cd '${projectDir}' && git init 2>&1`, 10000);
+      }
+      await ctx.exec(`mkdir -p '${projectDir}/.spyre'`, 10000);
+    } catch (projErr) {
+      console.warn('[spyre] Project directory setup failed (non-fatal):', projErr);
+    }
+  }
+
+  // Look up persona for this environment
+  const persona = req.persona_id ? getPersona(req.persona_id) ?? null : null;
+  const projectContext = req.repo_url
+    ? { repoUrl: req.repo_url, gitBranch: req.git_branch, projectDir: req.project_dir }
+    : null;
+
   // Inject .spyre tracking (always)
   try {
-    const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
-    await injectSpyreTracking(ctx.exec);
+    await injectSpyreTracking(ctx.exec, undefined, persona, projectContext);
   } catch (trackErr) {
     console.warn('[spyre] Spyre tracking injection failed (non-fatal):', trackErr);
+  }
+
+  // Write project-level CLAUDE.md for docker-enabled environments
+  if (req.docker_enabled) {
+    try {
+      await injectSpyreTracking(ctx.exec, projectDir, persona, projectContext);
+    } catch (trackErr) {
+      console.warn('[spyre] Project-level CLAUDE.md injection failed (non-fatal):', trackErr);
+    }
   }
 
   // Install Claude CLI if requested (opt-in)
@@ -684,7 +733,6 @@ async function createViaCommunityScript(
     logProvisioningStep(id, 'claude_install', 'running', 'Installing Claude Code...');
     broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Installing Claude Code...', status: 'running' });
     try {
-      const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
       await installClaudeInEnvironment(ctx.exec);
       logProvisioningStep(id, 'claude_install', 'success', 'Claude Code installed.');
       broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Claude Code installed.', status: 'success' });
@@ -693,6 +741,15 @@ async function createViaCommunityScript(
       logProvisioningStep(id, 'claude_install', 'error', msg);
       broadcastProvisioningEvent(id, { phase: 'claude_install', step: msg, status: 'error' });
       // Still non-fatal — don't fail the entire provisioning
+    }
+  }
+
+  // Propagate GitHub auth if repo URL is configured
+  if (req.repo_url) {
+    try {
+      await propagateGitHubAuth(id, persona?.name);
+    } catch (ghErr) {
+      console.warn('[spyre] GitHub auth propagation failed (non-fatal):', ghErr);
     }
   }
 
@@ -733,9 +790,16 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
 
   // Insert pending environment into DB first
   db.prepare(`
-    INSERT INTO environments (id, name, type, status, node, ssh_user, metadata)
-    VALUES (?, ?, ?, 'provisioning', ?, ?, ?)
-  `).run(id, req.name, req.type, node, sshUser, JSON.stringify(metadata));
+    INSERT INTO environments (id, name, type, status, node, ssh_user, metadata, persona_id, docker_enabled, repo_url, git_branch, project_dir)
+    VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, req.name, req.type, node, sshUser, JSON.stringify(metadata),
+    req.persona_id ?? null,
+    req.docker_enabled ? 1 : 0,
+    req.repo_url ?? null,
+    req.git_branch ?? 'main',
+    req.project_dir ?? '/project'
+  );
 
   // Log initial provisioning step
   logProvisioningStep(id, 'proxmox', 'running', 'Starting environment provisioning...');
@@ -835,9 +899,15 @@ async function createViaProxmoxApi(
   const nameserver = req.nameserver ?? config.defaults.dns ?? '8.8.8.8';
 
   // Unprivileged and nesting defaults
+  // Docker-in-LXC requires nesting=1 and keyctl=1
   const unprivileged = req.unprivileged !== false;
-  const nesting = req.nesting !== false;
-  const features = nesting ? 'nesting=1' : undefined;
+  const nesting = req.docker_enabled ? true : (req.nesting !== false);
+  let features: string | undefined;
+  if (nesting && req.docker_enabled) {
+    features = 'nesting=1,keyctl=1';
+  } else if (nesting) {
+    features = 'nesting=1';
+  }
 
   // Swap defaults to 0
   const swap = req.swap ?? 0;
@@ -883,7 +953,7 @@ async function createViaProxmoxApi(
       unprivileged,
       features,
       timezone: 'host',
-      onboot: false
+      onboot: false,
     });
 
     // Update DB with VMID immediately (inside lock, so it's claimed)
@@ -950,12 +1020,75 @@ async function createViaProxmoxApi(
     // Non-fatal — container is created and accessible
   }
 
+  const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
+
+  // Docker provisioning — install Docker and set up project directory
+  if (req.docker_enabled) {
+    logProvisioningStep(id, 'docker_install', 'running', 'Installing Docker...');
+    broadcastProvisioningEvent(id, { phase: 'docker_install', step: 'Installing Docker...', status: 'running' });
+    try {
+      await ensureDockerInstalled(id);
+      logProvisioningStep(id, 'docker_install', 'success', 'Docker installed.');
+      broadcastProvisioningEvent(id, { phase: 'docker_install', step: 'Docker installed.', status: 'success' });
+    } catch (dockerErr) {
+      const msg = dockerErr instanceof Error ? dockerErr.message : String(dockerErr);
+      logProvisioningStep(id, 'docker_install', 'error', msg);
+      broadcastProvisioningEvent(id, { phase: 'docker_install', step: msg, status: 'error' });
+      // Non-fatal — can be retried later
+    }
+  }
+
+  // Project directory setup — clone repo or init git
+  const projectDir = req.project_dir ?? '/project';
+  if (req.repo_url || req.docker_enabled) {
+    logProvisioningStep(id, 'project_setup', 'running', 'Setting up project directory...');
+    broadcastProvisioningEvent(id, { phase: 'project_setup', step: 'Setting up project directory...', status: 'running' });
+    try {
+      await ctx.exec(`mkdir -p '${projectDir}'`, 10000);
+      if (req.repo_url) {
+        // Clone repo (with GitHub PAT if configured)
+        const gitBranch = req.git_branch ?? 'main';
+        const cloneResult = await ctx.exec(
+          `git clone --branch '${gitBranch}' '${req.repo_url}' '${projectDir}' 2>&1 || ` +
+          `(cd '${projectDir}' && git init && git remote add origin '${req.repo_url}' && git fetch origin '${gitBranch}' && git checkout -b '${gitBranch}' 'origin/${gitBranch}' 2>&1)`,
+          120000
+        );
+        console.log(`[spyre] Repo clone result: exit=${cloneResult.code}`);
+      } else {
+        // Init empty git repo for docker-enabled environments
+        await ctx.exec(`cd '${projectDir}' && git init 2>&1`, 10000);
+      }
+      // Create .spyre directory in project
+      await ctx.exec(`mkdir -p '${projectDir}/.spyre'`, 10000);
+      logProvisioningStep(id, 'project_setup', 'success', `Project directory ready at ${projectDir}.`);
+      broadcastProvisioningEvent(id, { phase: 'project_setup', step: `Project directory ready at ${projectDir}.`, status: 'success' });
+    } catch (projErr) {
+      const msg = projErr instanceof Error ? projErr.message : String(projErr);
+      logProvisioningStep(id, 'project_setup', 'error', msg);
+      broadcastProvisioningEvent(id, { phase: 'project_setup', step: msg, status: 'error' });
+    }
+  }
+
+  // Look up persona for this environment
+  const persona = req.persona_id ? getPersona(req.persona_id) ?? null : null;
+  const projectContext = req.repo_url
+    ? { repoUrl: req.repo_url, gitBranch: req.git_branch, projectDir: req.project_dir }
+    : null;
+
   // Inject .spyre tracking (always)
   try {
-    const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
-    await injectSpyreTracking(ctx.exec);
+    await injectSpyreTracking(ctx.exec, undefined, persona, projectContext);
   } catch (trackErr) {
     console.warn('[spyre] Spyre tracking injection failed (non-fatal):', trackErr);
+  }
+
+  // Write project-level CLAUDE.md into the project directory for docker-enabled environments
+  if (req.docker_enabled) {
+    try {
+      await injectSpyreTracking(ctx.exec, projectDir, persona, projectContext);
+    } catch (trackErr) {
+      console.warn('[spyre] Project-level CLAUDE.md injection failed (non-fatal):', trackErr);
+    }
   }
 
   // Install Claude CLI if requested (opt-in)
@@ -963,7 +1096,6 @@ async function createViaProxmoxApi(
     logProvisioningStep(id, 'claude_install', 'running', 'Installing Claude Code...');
     broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Installing Claude Code...', status: 'running' });
     try {
-      const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
       await installClaudeInEnvironment(ctx.exec);
       logProvisioningStep(id, 'claude_install', 'success', 'Claude Code installed.');
       broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Claude Code installed.', status: 'success' });
@@ -972,6 +1104,15 @@ async function createViaProxmoxApi(
       logProvisioningStep(id, 'claude_install', 'error', msg);
       broadcastProvisioningEvent(id, { phase: 'claude_install', step: msg, status: 'error' });
       // Still non-fatal — don't fail the entire provisioning
+    }
+  }
+
+  // Propagate GitHub auth if repo URL is configured
+  if (req.repo_url) {
+    try {
+      await propagateGitHubAuth(id, persona?.name);
+    } catch (ghErr) {
+      console.warn('[spyre] GitHub auth propagation failed (non-fatal):', ghErr);
     }
   }
 
