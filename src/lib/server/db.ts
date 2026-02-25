@@ -358,6 +358,97 @@ function applyMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE claude_task_queue ADD COLUMN devcontainer_id TEXT');
   }
 
+  // Pipeline tables (v0.11.0)
+  const hasPipelinesTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='pipelines'"
+  ).get();
+  if (!hasPipelinesTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pipeline_templates (
+        id          TEXT PRIMARY KEY,
+        name        TEXT UNIQUE NOT NULL,
+        description TEXT,
+        env_id      TEXT REFERENCES environments(id) ON DELETE SET NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS pipeline_template_steps (
+        id                TEXT PRIMARY KEY,
+        template_id       TEXT NOT NULL REFERENCES pipeline_templates(id) ON DELETE CASCADE,
+        position          INTEGER NOT NULL,
+        type              TEXT NOT NULL CHECK (type IN ('agent','gate')),
+        label             TEXT NOT NULL,
+        devcontainer_id   TEXT REFERENCES devcontainers(id) ON DELETE SET NULL,
+        persona_id        TEXT REFERENCES personas(id) ON DELETE SET NULL,
+        prompt_template   TEXT,
+        gate_instructions TEXT,
+        max_retries       INTEGER NOT NULL DEFAULT 0,
+        timeout_ms        INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_tmpl_steps ON pipeline_template_steps(template_id, position);
+
+      CREATE TABLE IF NOT EXISTS pipelines (
+        id               TEXT PRIMARY KEY,
+        env_id           TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        template_id      TEXT REFERENCES pipeline_templates(id) ON DELETE SET NULL,
+        name             TEXT NOT NULL,
+        description      TEXT,
+        status           TEXT NOT NULL DEFAULT 'draft'
+                         CHECK (status IN ('draft','running','paused','completed','failed','cancelled')),
+        current_position INTEGER,
+        total_cost_usd   REAL NOT NULL DEFAULT 0.0,
+        error_message    TEXT,
+        started_at       TEXT,
+        completed_at     TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pipelines_env ON pipelines(env_id);
+      CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status);
+
+      CREATE TABLE IF NOT EXISTS pipeline_steps (
+        id                TEXT PRIMARY KEY,
+        pipeline_id       TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+        position          INTEGER NOT NULL,
+        type              TEXT NOT NULL CHECK (type IN ('agent','gate')),
+        label             TEXT NOT NULL,
+        devcontainer_id   TEXT REFERENCES devcontainers(id) ON DELETE SET NULL,
+        persona_id        TEXT REFERENCES personas(id) ON DELETE SET NULL,
+        prompt_template   TEXT,
+        gate_instructions TEXT,
+        status            TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending','running','completed','skipped','error','waiting','cancelled')),
+        task_id           TEXT REFERENCES claude_tasks(id) ON DELETE SET NULL,
+        result_summary    TEXT,
+        gate_result       TEXT CHECK (gate_result IS NULL OR gate_result IN ('approved','rejected','revised')),
+        gate_feedback     TEXT,
+        gate_decided_at   TEXT,
+        iteration         INTEGER NOT NULL DEFAULT 0,
+        max_retries       INTEGER NOT NULL DEFAULT 0,
+        retry_count       INTEGER NOT NULL DEFAULT 0,
+        timeout_ms        INTEGER,
+        cost_usd          REAL,
+        started_at        TEXT,
+        completed_at      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_psteps_pipeline ON pipeline_steps(pipeline_id, position);
+      CREATE INDEX IF NOT EXISTS idx_psteps_task ON pipeline_steps(task_id);
+
+      CREATE TABLE IF NOT EXISTS pipeline_context_snapshots (
+        id            TEXT PRIMARY KEY,
+        pipeline_id   TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+        step_id       TEXT REFERENCES pipeline_steps(id) ON DELETE CASCADE,
+        snapshot_type TEXT NOT NULL CHECK (snapshot_type IN ('start','step_complete','gate_decision')),
+        git_diff      TEXT,
+        git_status    TEXT,
+        commit_hash   TEXT,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_snapshots_pipeline ON pipeline_context_snapshots(pipeline_id);
+    `);
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

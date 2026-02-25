@@ -12,7 +12,11 @@
 	import ClaudeGitActivityComponent from '$lib/components/ClaudeGitActivity.svelte';
 	import ClaudeTaskHistory from '$lib/components/ClaudeTaskHistory.svelte';
 	import ClaudeTaskQueue from '$lib/components/ClaudeTaskQueue.svelte';
+	import PipelineList from '$lib/components/PipelineList.svelte';
+	import PipelineBuilder from '$lib/components/PipelineBuilder.svelte';
+	import PipelineRunner from '$lib/components/PipelineRunner.svelte';
 	import { addToast } from '$lib/stores/toast.svelte';
+	import type { Pipeline } from '$lib/types/pipeline';
 
 	interface ResourceMetrics {
 		cpuPercent: number;
@@ -83,7 +87,7 @@
 	let claudeActiveTask = $state<ClaudeTask | null>(data.claude?.activeTask ?? null);
 	let claudeTaskHistory = $state<ClaudeTask[]>(data.claude?.taskHistory ?? []);
 	let claudeQueueItems = $state<ClaudeTaskQueueItem[]>((data.claude?.queueItems ?? []) as ClaudeTaskQueueItem[]);
-	let activeTab = $state<'terminal' | 'claude'>('terminal');
+	let activeTab = $state<'terminal' | 'claude' | 'pipelines'>('terminal');
 
 	// Devcontainer state (docker multi-agent mode)
 	let devcontainers = $state<DevcontainerWithPersona[]>(data.devcontainers ?? []);
@@ -93,6 +97,11 @@
 	let dcDispatchId = $state('');
 	let dcDispatchPrompt = $state('');
 	let dcDispatching = $state(false);
+
+	// Pipeline state
+	let pipelines = $state<Pipeline[]>(data.pipelines ?? []);
+	let pipelineView = $state<'list' | 'builder' | 'runner'>('list');
+	let selectedPipelineId = $state<string | null>(null);
 
 	async function refreshDevcontainers() {
 		try {
@@ -205,6 +214,13 @@
 		try {
 			const res = await fetch(`/api/claude/queue/${env.id}`);
 			if (res.ok) claudeQueueItems = await res.json();
+		} catch { /* ignore */ }
+	}
+
+	async function refreshPipelines() {
+		try {
+			const res = await fetch(`/api/pipelines?envId=${env.id}`);
+			if (res.ok) pipelines = await res.json();
 		} catch { /* ignore */ }
 	}
 
@@ -515,6 +531,9 @@
 		<div class="tab-switcher">
 			<button class="tab-btn" class:active={activeTab === 'terminal'} onclick={() => activeTab = 'terminal'}>Terminal</button>
 			<button class="tab-btn" class:active={activeTab === 'claude'} onclick={() => activeTab = 'claude'}>Claude</button>
+			{#if env.docker_enabled}
+				<button class="tab-btn" class:active={activeTab === 'pipelines'} onclick={() => activeTab = 'pipelines'}>Pipelines</button>
+			{/if}
 		</div>
 	{/if}
 
@@ -675,6 +694,38 @@
 				<div class="claude-card card">
 					<h3>Task History</h3>
 					<ClaudeTaskHistory tasks={claudeTaskHistory} />
+				</div>
+			{/if}
+		</div>
+	{:else if env.status === 'running' && env.ip_address && activeTab === 'pipelines'}
+		<div class="claude-section">
+			{#if pipelineView === 'list'}
+				<div class="claude-card card">
+					<PipelineList
+						envId={env.id}
+						{pipelines}
+						onSelect={(id) => { selectedPipelineId = id; pipelineView = 'runner'; }}
+						onCreateNew={() => { pipelineView = 'builder'; }}
+						onRefresh={refreshPipelines}
+					/>
+				</div>
+			{:else if pipelineView === 'builder'}
+				<div class="claude-card card">
+					<PipelineBuilder
+						envId={env.id}
+						{devcontainers}
+						personas={data.personas ?? []}
+						onCreated={(id) => { selectedPipelineId = id; pipelineView = 'runner'; refreshPipelines(); }}
+						onCancel={() => { pipelineView = 'list'; }}
+					/>
+				</div>
+			{:else if pipelineView === 'runner' && selectedPipelineId}
+				<div class="claude-card card">
+					<PipelineRunner
+						pipelineId={selectedPipelineId}
+						onBack={() => { pipelineView = 'list'; selectedPipelineId = null; refreshPipelines(); }}
+						onRefresh={refreshPipelines}
+					/>
 				</div>
 			{/if}
 		</div>

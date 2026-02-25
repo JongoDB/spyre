@@ -8,6 +8,7 @@ import { getProgressForEnv, getGitActivityForEnv } from '$lib/server/claude-poll
 import { getProvisioningProgress } from '$lib/server/provisioning-log';
 import { getPersona, listPersonas } from '$lib/server/personas';
 import { listDevcontainers } from '$lib/server/devcontainers';
+import { listPipelines } from '$lib/server/pipeline-engine';
 
 export const load: PageServerLoad = async ({ params }) => {
   let env = getEnvironment(params.id);
@@ -66,6 +67,9 @@ export const load: PageServerLoad = async ({ params }) => {
   // Load personas list for docker-enabled environments (needed for "Add Agent" form)
   const personas = env.docker_enabled ? listPersonas() : [];
 
+  // Load pipelines for docker-enabled environments
+  const pipelines = env.docker_enabled ? listPipelines(env.id) : [];
+
   return {
     environment: env,
     metadata,
@@ -73,6 +77,7 @@ export const load: PageServerLoad = async ({ params }) => {
     persona,
     devcontainers,
     personas,
+    pipelines,
     claude: {
       activeTask,
       taskHistory,
