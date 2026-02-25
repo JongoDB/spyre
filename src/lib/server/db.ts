@@ -60,6 +60,53 @@ function applyMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE claude_tasks ADD COLUMN output TEXT');
   }
 
+  // Add updated_at column to claude_tasks if missing
+  const taskCols2 = db.pragma('table_info(claude_tasks)') as Array<{ name: string }>;
+  if (taskCols2.length > 0 && !taskCols2.some(c => c.name === 'updated_at')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN updated_at TEXT');
+  }
+
+  // Remove CHECK constraint from claude_auth_log.event (code writes many event types beyond original 8)
+  const authLogCheck = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='claude_auth_log'"
+  ).get() as { sql: string } | undefined;
+  if (authLogCheck && authLogCheck.sql.includes('CHECK')) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS claude_auth_log_new (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        event     TEXT NOT NULL,
+        details   TEXT,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT OR IGNORE INTO claude_auth_log_new SELECT * FROM claude_auth_log;
+      DROP TABLE claude_auth_log;
+      ALTER TABLE claude_auth_log_new RENAME TO claude_auth_log;
+      CREATE INDEX IF NOT EXISTS idx_claude_auth_log_event ON claude_auth_log(event);
+    `);
+  }
+
+  // Add 'error' status to claude_task_queue CHECK constraint
+  const queueCheck = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='claude_task_queue'"
+  ).get() as { sql: string } | undefined;
+  if (queueCheck && !queueCheck.sql.includes("'error'")) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS claude_task_queue_new (
+        id         TEXT PRIMARY KEY,
+        env_id     TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        prompt     TEXT NOT NULL,
+        position   INTEGER NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'queued'
+                   CHECK (status IN ('queued', 'dispatched', 'cancelled', 'error')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT OR IGNORE INTO claude_task_queue_new SELECT * FROM claude_task_queue;
+      DROP TABLE claude_task_queue;
+      ALTER TABLE claude_task_queue_new RENAME TO claude_task_queue;
+      CREATE INDEX IF NOT EXISTS idx_task_queue_env ON claude_task_queue(env_id, position);
+    `);
+  }
+
   // v0.9.0: Software repo, config index, template_software tables
   // Create individually to avoid re-running full schema.sql (which can cause ALTER TABLE conflicts)
   const v09Exists = db.prepare(

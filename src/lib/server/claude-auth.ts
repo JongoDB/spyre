@@ -339,10 +339,15 @@ export async function submitOauthCode(code: string): Promise<{ success: boolean;
     if (pidOutput) {
       const ptyPid = parseInt(pidOutput.split('\n')[0], 10);
       if (!isNaN(ptyPid)) {
-        // Found an orphaned PTY process. Spawn a new Python wrapper connected
-        // to the same PTY? No — we can't write to the orphan's stdin.
-        // Instead, kill the orphan and start fresh.
         logAuthEvent('orphan_found', { pid: ptyPid });
+        try {
+          process.kill(ptyPid, 'SIGTERM');
+          logAuthEvent('orphan_killed', { pid: ptyPid });
+          // Brief delay after killing to let credentials file settle
+          await new Promise(r => setTimeout(r, 1000));
+        } catch {
+          // Process may have already exited
+        }
       }
     }
   } catch {
@@ -609,6 +614,16 @@ export function cancelAuth(): void {
     _authProcess.kill();
     _authProcess = null;
   }
+
+  // Kill any orphaned PTY wrapper processes left over from HMR or crashes
+  try {
+    execFile('pkill', ['-f', 'claude-auth-pty'], { timeout: 5000 }, () => {
+      // Non-critical — fire and forget
+    });
+  } catch {
+    // Non-critical — no orphans to clean up
+  }
+
   setState({
     status: 'idle',
     oauthUrl: null,

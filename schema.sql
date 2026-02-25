@@ -80,9 +80,11 @@ CREATE TABLE IF NOT EXISTS claude_tasks (
     error_message   TEXT,
     cost_usd        REAL,                                    -- from Claude's JSON output
     session_id      TEXT,                                    -- Claude Code session ID (for --resume)
+    output          TEXT,                                    -- raw streamed output
     started_at      TEXT,
     completed_at    TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT                                     -- set on every task update
 );
 
 CREATE INDEX IF NOT EXISTS idx_claude_tasks_env ON claude_tasks(env_id);
@@ -94,13 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_claude_tasks_created ON claude_tasks(created_at);
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS claude_auth_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    event           TEXT NOT NULL                             -- initiated | callback_received | authenticated |
-                    CHECK (event IN (                        --   expired | error | health_check |
-                        'initiated', 'callback_received',    --   cancelled | token_expiring_soon
-                        'authenticated', 'expired',
-                        'error', 'health_check',
-                        'cancelled', 'token_expiring_soon'
-                    )),
+    event           TEXT NOT NULL,                            -- free-form event type (e.g. initiated, authenticated, error, cli_installed, orphan_found, ...)
     details         TEXT,                                    -- JSON blob with event-specific data
     timestamp       TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -452,7 +448,7 @@ CREATE TABLE IF NOT EXISTS claude_task_queue (
     prompt     TEXT NOT NULL,
     position   INTEGER NOT NULL,
     status     TEXT NOT NULL DEFAULT 'queued'
-               CHECK (status IN ('queued', 'dispatched', 'cancelled')),
+               CHECK (status IN ('queued', 'dispatched', 'cancelled', 'error')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_queue_env ON claude_task_queue(env_id, position);

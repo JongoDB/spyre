@@ -11,6 +11,7 @@
 
 	let expandedTask = $state<string | null>(null);
 	let resuming = $state<string | null>(null);
+	let retrying = $state<string | null>(null);
 
 	function toggleExpand(taskId: string) {
 		expandedTask = expandedTask === taskId ? null : taskId;
@@ -47,6 +48,31 @@
 			addToast('Network error resuming task', 'error');
 		} finally {
 			resuming = null;
+		}
+	}
+
+	async function retryTask(task: ClaudeTask) {
+		if (!task.env_id) {
+			addToast('Cannot retry: no environment associated', 'error');
+			return;
+		}
+		retrying = task.id;
+		try {
+			const res = await fetch('/api/claude/tasks', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ envId: task.env_id, prompt: task.prompt })
+			});
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to retry task', 'error');
+			} else {
+				addToast('Task dispatched (retry)', 'success');
+			}
+		} catch {
+			addToast('Network error retrying task', 'error');
+		} finally {
+			retrying = null;
 		}
 	}
 </script>
@@ -108,15 +134,26 @@
 								<span>{new Date(task.created_at).toLocaleString()}</span>
 							</div>
 						</div>
-						{#if task.session_id && (task.status === 'complete' || task.status === 'error')}
+						{#if task.status === 'error' || (task.session_id && (task.status === 'complete' || task.status === 'error'))}
 							<div class="detail-actions">
-								<button
-									class="btn btn-secondary btn-sm"
-									onclick={() => resumeTask(task.id)}
-									disabled={resuming === task.id}
-								>
-									{resuming === task.id ? 'Resuming...' : 'Resume Session'}
-								</button>
+								{#if task.status === 'error'}
+									<button
+										class="btn btn-primary btn-sm"
+										onclick={() => retryTask(task)}
+										disabled={retrying === task.id}
+									>
+										{retrying === task.id ? 'Retrying...' : 'Retry'}
+									</button>
+								{/if}
+								{#if task.session_id && (task.status === 'complete' || task.status === 'error')}
+									<button
+										class="btn btn-secondary btn-sm"
+										onclick={() => resumeTask(task.id)}
+										disabled={resuming === task.id}
+									>
+										{resuming === task.id ? 'Resuming...' : 'Resume Session'}
+									</button>
+								{/if}
 							</div>
 						{/if}
 					</div>

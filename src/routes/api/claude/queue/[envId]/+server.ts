@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import { v4 as uuid } from 'uuid';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { processQueueForEnv } from '$lib/server/claude-queue';
 import type { ClaudeTaskQueueItem } from '$lib/types/claude';
 
 export const GET: RequestHandler = async ({ params }) => {
@@ -38,6 +39,12 @@ export const POST: RequestHandler = async ({ params, request }) => {
     `).run(id, params.envId, prompt, position);
 
     const item = db.prepare('SELECT * FROM claude_task_queue WHERE id = ?').get(id);
+
+    // Trigger queue processing (non-blocking)
+    processQueueForEnv(params.envId).catch(() => {
+      // Non-critical — polling will pick it up
+    });
+
     return json(item, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to add to queue';

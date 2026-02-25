@@ -73,7 +73,7 @@ export interface ClaudeTaskQueueItem {
   env_id: string;
   prompt: string;
   position: number;
-  status: 'queued' | 'dispatched' | 'cancelled';
+  status: 'queued' | 'dispatched' | 'cancelled' | 'error';
   created_at: string;
 }
 
