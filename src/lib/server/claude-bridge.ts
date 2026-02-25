@@ -4,7 +4,7 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import { getConnection } from './ssh-pool';
 import { getEnvironment } from './environments';
-import type { ClaudeTask, ClaudeDispatchOptions } from '$lib/types/claude';
+import type { ClaudeTask, ClaudeTaskEvent, ClaudeDispatchOptions } from '$lib/types/claude';
 
 // =============================================================================
 // Claude Bridge — Task Dispatch Engine
@@ -26,6 +26,223 @@ const activeTasks = new Map<string, {
 const claudeInstalledCache = new Set<string>();
 
 // =============================================================================
+// Stream-JSON Parser
+// =============================================================================
+
+/**
+ * Parses newline-delimited JSON from Claude's --output-format stream-json.
+ * Manages mutable buffer state across feed() calls as SSH chunks arrive.
+ */
+export class StreamJsonParser {
+  private buffer = '';
+  onEvent: ((raw: Record<string, unknown>) => void) | null = null;
+
+  feed(chunk: string): void {
+    this.buffer += chunk;
+    const lines = this.buffer.split('\n');
+    // Keep the last (potentially incomplete) line in the buffer
+    this.buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const obj = JSON.parse(trimmed) as Record<string, unknown>;
+        this.onEvent?.(obj);
+      } catch {
+        // Not valid JSON — skip
+      }
+    }
+  }
+
+  flush(): void {
+    const trimmed = this.buffer.trim();
+    this.buffer = '';
+    if (!trimmed) return;
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      this.onEvent?.(obj);
+    } catch {
+      // Not valid JSON — skip
+    }
+  }
+}
+
+// =============================================================================
+// Event Extraction
+// =============================================================================
+
+export function summarizeToolInput(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case 'Bash':
+      return truncate(String(input.command ?? ''), 100);
+    case 'Edit':
+    case 'Write':
+    case 'Read':
+      return truncate(String(input.file_path ?? ''), 100);
+    case 'Grep':
+      return truncate(`${input.pattern ?? ''} ${input.path ?? ''}`.trim(), 100);
+    case 'Glob':
+      return truncate(String(input.pattern ?? ''), 100);
+    case 'WebFetch':
+      return truncate(String(input.url ?? ''), 100);
+    case 'Task':
+      return truncate(String(input.description ?? ''), 100);
+    default:
+      return toolName;
+  }
+}
+
+function truncate(str: string, max: number): string {
+  if (str.length <= max) return str;
+  return str.slice(0, max - 3) + '...';
+}
+
+export function extractTaskEvent(
+  raw: Record<string, unknown>,
+  seq: number
+): ClaudeTaskEvent | null {
+  const timestamp = new Date().toISOString();
+
+  // type: 'system' → init
+  if (raw.type === 'system') {
+    return {
+      seq,
+      type: 'init',
+      timestamp,
+      summary: 'Session started',
+      data: raw
+    };
+  }
+
+  // type: 'assistant' → check content blocks
+  if (raw.type === 'assistant') {
+    const content = raw.content as Array<Record<string, unknown>> | undefined;
+    if (!content || !Array.isArray(content)) {
+      return {
+        seq,
+        type: 'text',
+        timestamp,
+        summary: truncate(String(raw.message ?? ''), 200),
+        data: raw
+      };
+    }
+
+    // Check for tool_use blocks
+    const toolBlocks = content.filter(b => b.type === 'tool_use');
+    if (toolBlocks.length > 0) {
+      const first = toolBlocks[0];
+      const toolName = String(first.name ?? 'unknown');
+      const input = (first.input as Record<string, unknown>) ?? {};
+      const detail = summarizeToolInput(toolName, input);
+      return {
+        seq,
+        type: 'tool_use',
+        timestamp,
+        summary: truncate(`${toolName}: ${detail}`, 200),
+        data: raw
+      };
+    }
+
+    // Text-only assistant message
+    const textBlocks = content.filter(b => b.type === 'text');
+    const text = textBlocks.map(b => String(b.text ?? '')).join('');
+    return {
+      seq,
+      type: 'text',
+      timestamp,
+      summary: truncate(text, 200),
+      data: raw
+    };
+  }
+
+  // type: 'tool_result'
+  if (raw.type === 'tool_result') {
+    const content = String(raw.content ?? '');
+    return {
+      seq,
+      type: 'tool_result',
+      timestamp,
+      summary: truncate(content, 200),
+      data: raw
+    };
+  }
+
+  // type: 'result'
+  if (raw.type === 'result') {
+    const costUsd = raw.cost_usd ?? raw.costUsd ?? null;
+    const duration = raw.duration_ms ?? raw.durationMs ?? null;
+    let summary = 'Task complete';
+    const parts: string[] = [];
+    if (duration != null) parts.push(`${Math.round(Number(duration) / 1000)}s`);
+    if (costUsd != null) parts.push(`$${Number(costUsd).toFixed(4)}`);
+    if (parts.length > 0) summary = `Complete: ${parts.join(', ')}`;
+    return {
+      seq,
+      type: 'result',
+      timestamp,
+      summary,
+      data: raw
+    };
+  }
+
+  // Unknown type — still capture it
+  return {
+    seq,
+    type: 'text',
+    timestamp,
+    summary: truncate(JSON.stringify(raw), 200),
+    data: raw
+  };
+}
+
+// =============================================================================
+// Error Categorization
+// =============================================================================
+
+interface ErrorCategory {
+  code: string;
+  status: 'error' | 'auth_required';
+  message: string;
+  retryable: boolean;
+}
+
+export function categorizeError(
+  exitCode: number,
+  stderr: string,
+  stdout: string
+): ErrorCategory {
+  const lower = (stderr + ' ' + stdout).toLowerCase();
+
+  if (lower.includes('not authenticated') || lower.includes('unauthorized') || lower.includes('invalid api key')) {
+    return { code: 'AUTH_EXPIRED', status: 'auth_required', message: 'Claude authentication expired', retryable: false };
+  }
+  if (lower.includes('rate limit') || lower.includes('429')) {
+    return { code: 'RATE_LIMITED', status: 'error', message: 'Rate limited by Claude API', retryable: true };
+  }
+  if (lower.includes('econnrefused') || lower.includes('econnreset') || lower.includes('etimedout')) {
+    return { code: 'NETWORK_ERROR', status: 'error', message: 'Network connection error', retryable: true };
+  }
+  if (lower.includes('timed out')) {
+    return { code: 'TIMEOUT', status: 'error', message: 'Task timed out', retryable: true };
+  }
+  if (lower.includes('command not found') || lower.includes('no such file')) {
+    return { code: 'CLI_NOT_FOUND', status: 'error', message: 'Claude CLI not found', retryable: false };
+  }
+  if (lower.includes('ssh') && (lower.includes('connection') || lower.includes('refused'))) {
+    return { code: 'SSH_ERROR', status: 'error', message: 'SSH connection failed', retryable: true };
+  }
+  if (exitCode > 1) {
+    return { code: 'PROCESS_CRASH', status: 'error', message: `Process exited with code ${exitCode}`, retryable: true };
+  }
+  if (exitCode === 1) {
+    return { code: 'TASK_FAILED', status: 'error', message: stderr || `Exit code ${exitCode}`, retryable: false };
+  }
+
+  return { code: 'UNKNOWN', status: 'error', message: stderr || 'Unknown error', retryable: false };
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -45,6 +262,51 @@ function updateTask(taskId: string, updates: Record<string, unknown>): void {
   db.prepare(
     `UPDATE claude_tasks SET ${setClauses.join(', ')} WHERE id = ?`
   ).run(...values);
+}
+
+function insertTaskEvent(taskId: string, event: ClaudeTaskEvent): void {
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT OR IGNORE INTO claude_task_events (task_id, seq, event_type, summary, data, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      taskId,
+      event.seq,
+      event.type,
+      event.summary,
+      JSON.stringify(event.data),
+      event.timestamp
+    );
+  } catch {
+    // Non-critical — don't fail the task
+  }
+}
+
+export function getTaskEvents(taskId: string, afterSeq?: number): ClaudeTaskEvent[] {
+  const db = getDb();
+  if (afterSeq != null) {
+    const rows = db.prepare(
+      'SELECT seq, event_type, summary, data, created_at FROM claude_task_events WHERE task_id = ? AND seq > ? ORDER BY seq ASC'
+    ).all(taskId, afterSeq) as Array<{ seq: number; event_type: string; summary: string; data: string; created_at: string }>;
+    return rows.map(r => ({
+      seq: r.seq,
+      type: r.event_type as ClaudeTaskEvent['type'],
+      timestamp: r.created_at,
+      summary: r.summary,
+      data: r.data ? JSON.parse(r.data) : {}
+    }));
+  }
+  const rows = db.prepare(
+    'SELECT seq, event_type, summary, data, created_at FROM claude_task_events WHERE task_id = ? ORDER BY seq ASC'
+  ).all(taskId) as Array<{ seq: number; event_type: string; summary: string; data: string; created_at: string }>;
+  return rows.map(r => ({
+    seq: r.seq,
+    type: r.event_type as ClaudeTaskEvent['type'],
+    timestamp: r.created_at,
+    summary: r.summary,
+    data: r.data ? JSON.parse(r.data) : {}
+  }));
 }
 
 async function verifyClaudeInstalled(envId: string): Promise<boolean> {
@@ -74,6 +336,42 @@ async function verifyClaudeInstalled(envId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// =============================================================================
+// Task Execution — Shared stream handling
+// =============================================================================
+
+function setupStreamParsing(
+  taskId: string,
+  parser: StreamJsonParser
+): { seq: { value: number }; sessionId: { value: string | null }; costUsd: { value: number | null }; parsedResult: { value: string | null } } {
+  const seq = { value: 0 };
+  const sessionId = { value: null as string | null };
+  const costUsd = { value: null as number | null };
+  const parsedResult = { value: null as string | null };
+
+  parser.onEvent = (raw) => {
+    seq.value++;
+    const event = extractTaskEvent(raw, seq.value);
+    if (!event) return;
+
+    // Track key fields from events
+    if (raw.session_id) sessionId.value = String(raw.session_id);
+    if (raw.type === 'result') {
+      parsedResult.value = (raw.result ?? raw.text ?? null) as string | null;
+      costUsd.value = (raw.cost_usd ?? raw.costUsd ?? null) as number | null;
+      if (raw.session_id) sessionId.value = String(raw.session_id);
+    }
+
+    // Persist event to DB
+    insertTaskEvent(taskId, event);
+
+    // Emit structured event for WebSocket
+    emitter.emit(`task:${taskId}:event`, event);
+  };
+
+  return { seq, sessionId, costUsd, parsedResult };
 }
 
 // =============================================================================
@@ -119,7 +417,7 @@ export function listTasks(filters?: { envId?: string; status?: string; limit?: n
   ).all(...params) as ClaudeTask[];
 }
 
-export async function dispatch(options: ClaudeDispatchOptions): Promise<string> {
+export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: number }): Promise<string> {
   const { envId, prompt, workingDir } = options;
 
   // Validate environment
@@ -148,10 +446,11 @@ export async function dispatch(options: ClaudeDispatchOptions): Promise<string> 
   // Create task record
   const taskId = uuid();
   const db = getDb();
+  const maxRetries = options.maxRetries ?? 0;
   db.prepare(`
-    INSERT INTO claude_tasks (id, env_id, prompt, status, created_at)
-    VALUES (?, ?, ?, 'pending', datetime('now'))
-  `).run(taskId, envId, prompt);
+    INSERT INTO claude_tasks (id, env_id, prompt, status, max_retries, created_at)
+    VALUES (?, ?, ?, 'pending', ?, datetime('now'))
+  `).run(taskId, envId, prompt, maxRetries);
 
   // Start async execution
   executeTask(taskId, envId, prompt, workingDir).catch((err) => {
@@ -160,6 +459,7 @@ export async function dispatch(options: ClaudeDispatchOptions): Promise<string> 
       updateTask(taskId, {
         status: 'error',
         error_message: err instanceof Error ? err.message : String(err),
+        error_code: 'DISPATCH_ERROR',
         completed_at: new Date().toISOString()
       });
     } catch {
@@ -196,6 +496,8 @@ async function executeTask(
   activeTasks.set(taskId, taskState);
 
   let accumulatedOutput = '';
+  const parser = new StreamJsonParser();
+  const tracked = setupStreamParsing(taskId, parser);
 
   try {
     const client = await getConnection(envId);
@@ -233,7 +535,10 @@ async function executeTask(
           stdout += chunk;
           accumulatedOutput += chunk;
 
-          // Emit chunk for WebSocket streaming
+          // Feed to structured parser
+          parser.feed(chunk);
+
+          // Keep raw output emission for backward compat
           emitter.emit(`task:${taskId}:output`, {
             type: 'output',
             data: chunk,
@@ -267,81 +572,105 @@ async function executeTask(
       });
     });
 
+    // Flush any remaining buffer
+    parser.flush();
+
     activeTasks.delete(taskId);
 
     if (taskState.aborted) return;
 
-    // Parse result — try to extract JSON from stream-json output
-    let parsedResult: string | null = null;
-    let costUsd: number | null = null;
-    let sessionId: string | null = null;
+    // Use parsed values from structured events, falling back to post-hoc parse
+    let parsedResult = tracked.parsedResult.value;
+    let costUsd = tracked.costUsd.value;
+    let sessionId = tracked.sessionId.value;
 
-    try {
-      // stream-json outputs one JSON object per line
-      const lines = result.stdout.trim().split('\n');
-      for (const line of lines) {
-        try {
-          const obj = JSON.parse(line);
-          if (obj.type === 'result') {
-            parsedResult = obj.result ?? obj.text ?? null;
-            costUsd = obj.cost_usd ?? obj.costUsd ?? null;
-            sessionId = obj.session_id ?? obj.sessionId ?? null;
+    // Fallback: parse stdout if structured parsing didn't capture result
+    if (!parsedResult) {
+      try {
+        const lines = result.stdout.trim().split('\n');
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj.type === 'result') {
+              parsedResult = obj.result ?? obj.text ?? null;
+              costUsd = costUsd ?? obj.cost_usd ?? obj.costUsd ?? null;
+              sessionId = sessionId ?? obj.session_id ?? obj.sessionId ?? null;
+            }
+            if (obj.session_id && !sessionId) sessionId = obj.session_id;
+          } catch {
+            // Not JSON
           }
-          if (obj.session_id) sessionId = obj.session_id;
-        } catch {
-          // Not JSON — continue
         }
+      } catch {
+        // Failed to parse
       }
-    } catch {
-      // Failed to parse — use raw output
     }
 
     if (!parsedResult) {
       parsedResult = result.stdout;
     }
 
-    // Determine final status
-    const status = result.code === 0 ? 'complete' : 'error';
-    const errorMessage = result.code !== 0 ? (result.stderr || `Exit code ${result.code}`) : null;
+    // Determine final status using error categorization
+    if (result.code === 0) {
+      updateTask(taskId, {
+        status: 'complete',
+        result: parsedResult,
+        cost_usd: costUsd,
+        session_id: sessionId,
+        output: accumulatedOutput,
+        completed_at: new Date().toISOString()
+      });
 
-    // Check for auth_required in stderr
-    const finalStatus = result.stderr.includes('unauthorized') || result.stderr.includes('auth')
-      ? 'auth_required'
-      : status;
+      emitter.emit(`task:${taskId}:complete`, {
+        taskId,
+        status: 'complete',
+        result: parsedResult,
+        cost_usd: costUsd,
+        session_id: sessionId
+      });
+    } else {
+      const errCat = categorizeError(result.code, result.stderr, result.stdout);
 
-    updateTask(taskId, {
-      status: finalStatus,
-      result: parsedResult,
-      error_message: errorMessage,
-      cost_usd: costUsd,
-      session_id: sessionId,
-      output: accumulatedOutput,
-      completed_at: new Date().toISOString()
-    });
+      updateTask(taskId, {
+        status: errCat.status,
+        result: parsedResult,
+        error_message: errCat.message,
+        error_code: errCat.code,
+        cost_usd: costUsd,
+        session_id: sessionId,
+        output: accumulatedOutput,
+        completed_at: new Date().toISOString()
+      });
 
-    emitter.emit(`task:${taskId}:complete`, {
-      taskId,
-      status: finalStatus,
-      result: parsedResult,
-      cost_usd: costUsd,
-      session_id: sessionId
-    });
+      emitter.emit(`task:${taskId}:complete`, {
+        taskId,
+        status: errCat.status,
+        error: errCat.message,
+        error_code: errCat.code
+      });
+    }
 
   } catch (err) {
+    parser.flush();
     activeTasks.delete(taskId);
     const message = err instanceof Error ? err.message : String(err);
 
+    // Categorize the caught exception
+    const errCat = categorizeError(1, message, '');
+
     updateTask(taskId, {
-      status: 'error',
-      error_message: message,
+      status: errCat.status,
+      error_message: errCat.message,
+      error_code: errCat.code,
       output: accumulatedOutput,
       completed_at: new Date().toISOString()
     });
 
     emitter.emit(`task:${taskId}:complete`, {
       taskId,
-      status: 'error',
-      error: message
+      status: errCat.status,
+      error: errCat.message,
+      error_code: errCat.code
     });
   }
 }
@@ -392,6 +721,7 @@ export async function resumeTask(taskId: string): Promise<string> {
       updateTask(newTaskId, {
         status: 'error',
         error_message: err instanceof Error ? err.message : String(err),
+        error_code: 'DISPATCH_ERROR',
         completed_at: new Date().toISOString()
       });
     } catch {
@@ -426,6 +756,8 @@ async function executeResumeTask(
   activeTasks.set(taskId, taskState);
 
   let accumulatedOutput = '';
+  const parser = new StreamJsonParser();
+  const tracked = setupStreamParsing(taskId, parser);
 
   try {
     const client = await getConnection(envId);
@@ -452,6 +784,8 @@ async function executeResumeTask(
           const chunk = data.toString();
           stdout += chunk;
           accumulatedOutput += chunk;
+
+          parser.feed(chunk);
           emitter.emit(`task:${taskId}:output`, { type: 'output', data: chunk, taskId });
         });
 
@@ -464,28 +798,44 @@ async function executeResumeTask(
       });
     });
 
+    parser.flush();
     activeTasks.delete(taskId);
 
-    const status = result.code === 0 ? 'complete' : 'error';
-    updateTask(taskId, {
-      status,
-      result: result.stdout,
-      error_message: result.code !== 0 ? result.stderr : null,
-      output: accumulatedOutput,
-      completed_at: new Date().toISOString()
-    });
-
-    emitter.emit(`task:${taskId}:complete`, { taskId, status });
+    if (result.code === 0) {
+      updateTask(taskId, {
+        status: 'complete',
+        result: tracked.parsedResult.value ?? result.stdout,
+        cost_usd: tracked.costUsd.value,
+        session_id: tracked.sessionId.value ?? sessionId,
+        output: accumulatedOutput,
+        completed_at: new Date().toISOString()
+      });
+      emitter.emit(`task:${taskId}:complete`, { taskId, status: 'complete' });
+    } else {
+      const errCat = categorizeError(result.code, result.stderr, result.stdout);
+      updateTask(taskId, {
+        status: errCat.status,
+        result: tracked.parsedResult.value ?? result.stdout,
+        error_message: errCat.message,
+        error_code: errCat.code,
+        output: accumulatedOutput,
+        completed_at: new Date().toISOString()
+      });
+      emitter.emit(`task:${taskId}:complete`, { taskId, status: errCat.status, error_code: errCat.code });
+    }
   } catch (err) {
+    parser.flush();
     activeTasks.delete(taskId);
     const message = err instanceof Error ? err.message : String(err);
+    const errCat = categorizeError(1, message, '');
     updateTask(taskId, {
-      status: 'error',
-      error_message: message,
+      status: errCat.status,
+      error_message: errCat.message,
+      error_code: errCat.code,
       output: accumulatedOutput,
       completed_at: new Date().toISOString()
     });
-    emitter.emit(`task:${taskId}:complete`, { taskId, status: 'error', error: message });
+    emitter.emit(`task:${taskId}:complete`, { taskId, status: errCat.status, error: errCat.message, error_code: errCat.code });
   }
 }
 

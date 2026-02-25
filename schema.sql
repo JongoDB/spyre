@@ -84,12 +84,31 @@ CREATE TABLE IF NOT EXISTS claude_tasks (
     started_at      TEXT,
     completed_at    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT                                     -- set on every task update
+    updated_at      TEXT,                                    -- set on every task update
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retries     INTEGER NOT NULL DEFAULT 0,
+    error_code      TEXT,
+    parent_task_id  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_claude_tasks_env ON claude_tasks(env_id);
 CREATE INDEX IF NOT EXISTS idx_claude_tasks_status ON claude_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_claude_tasks_created ON claude_tasks(created_at);
+
+-- =============================================================================
+-- Claude Task Events — Structured stream-json events per task
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS claude_task_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL REFERENCES claude_tasks(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    event_type  TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    data        TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(task_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_claude_task_events_task ON claude_task_events(task_id, seq);
 
 -- =============================================================================
 -- Claude Auth Log — OAuth session lifecycle events

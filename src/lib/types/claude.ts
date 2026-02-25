@@ -31,6 +31,28 @@ export interface ClaudeTask {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  retry_count: number;
+  max_retries: number;
+  error_code: string | null;
+  parent_task_id: string | null;
+}
+
+/** Structured event stored in DB and sent to WebSocket clients */
+export interface ClaudeTaskEvent {
+  seq: number;
+  type: 'init' | 'text' | 'tool_use' | 'tool_result' | 'result' | 'error';
+  timestamp: string;
+  summary: string;
+  data: Record<string, unknown>;
+}
+
+/** Content block within a stream-json assistant message */
+export interface ClaudeContentBlock {
+  type: 'text' | 'tool_use';
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
 }
 
 export interface ClaudeTaskResult {

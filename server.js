@@ -238,14 +238,47 @@ function attachClaudeStream(ws, taskId) {
     return;
   }
 
-  // If task already completed, send final state
+  // If task already completed, send stored events then final state
   if (task.status === 'complete' || task.status === 'error' || task.status === 'cancelled') {
+    // Send stored structured events
+    try {
+      const events = db.prepare(
+        'SELECT seq, event_type, summary, data, created_at FROM claude_task_events WHERE task_id = ? ORDER BY seq ASC'
+      ).all(taskId);
+      for (const evt of events) {
+        sendJson(ws, {
+          type: 'event',
+          seq: evt.seq,
+          eventType: evt.event_type,
+          summary: evt.summary,
+          data: evt.data ? JSON.parse(evt.data) : {},
+          timestamp: evt.created_at
+        });
+      }
+    } catch { /* non-critical */ }
     sendJson(ws, { type: 'complete', taskId, status: task.status, result: task.result });
     ws.close();
     return;
   }
 
-  // Send accumulated output so far
+  // For running/pending tasks: send stored events so far (reconnect case)
+  try {
+    const events = db.prepare(
+      'SELECT seq, event_type, summary, data, created_at FROM claude_task_events WHERE task_id = ? ORDER BY seq ASC'
+    ).all(taskId);
+    for (const evt of events) {
+      sendJson(ws, {
+        type: 'event',
+        seq: evt.seq,
+        eventType: evt.event_type,
+        summary: evt.summary,
+        data: evt.data ? JSON.parse(evt.data) : {},
+        timestamp: evt.created_at
+      });
+    }
+  } catch { /* non-critical */ }
+
+  // Also send accumulated raw output for backward compat
   if (task.output) {
     sendJson(ws, { type: 'output', data: task.output, taskId });
   }
@@ -264,6 +297,19 @@ function attachClaudeStream(ws, taskId) {
       }
     };
 
+    const onEvent = (event) => {
+      if (ws.readyState === 1) {
+        sendJson(ws, {
+          type: 'event',
+          seq: event.seq,
+          eventType: event.type,
+          summary: event.summary,
+          data: event.data,
+          timestamp: event.timestamp
+        });
+      }
+    };
+
     const onComplete = (event) => {
       if (ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'complete', ...event }));
@@ -274,10 +320,12 @@ function attachClaudeStream(ws, taskId) {
 
     function cleanup() {
       emitter.removeListener(`task:${taskId}:output`, onOutput);
+      emitter.removeListener(`task:${taskId}:event`, onEvent);
       emitter.removeListener(`task:${taskId}:complete`, onComplete);
     }
 
     emitter.on(`task:${taskId}:output`, onOutput);
+    emitter.on(`task:${taskId}:event`, onEvent);
     emitter.on(`task:${taskId}:complete`, onComplete);
 
     ws.on('close', cleanup);

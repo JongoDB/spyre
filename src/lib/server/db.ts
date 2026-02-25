@@ -107,6 +107,41 @@ function applyMigrations(db: Database.Database): void {
     `);
   }
 
+  // Claude task events table + new columns on claude_tasks
+  const hasEventsTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='claude_task_events'"
+  ).get();
+  if (!hasEventsTable) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS claude_task_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id     TEXT NOT NULL REFERENCES claude_tasks(id) ON DELETE CASCADE,
+        seq         INTEGER NOT NULL,
+        event_type  TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        data        TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(task_id, seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_claude_task_events_task ON claude_task_events(task_id, seq);
+    `);
+  }
+
+  // Add retry/error columns to claude_tasks if missing
+  const taskColsRetry = db.pragma('table_info(claude_tasks)') as Array<{ name: string }>;
+  if (taskColsRetry.length > 0 && !taskColsRetry.some(c => c.name === 'retry_count')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (taskColsRetry.length > 0 && !taskColsRetry.some(c => c.name === 'max_retries')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 0');
+  }
+  if (taskColsRetry.length > 0 && !taskColsRetry.some(c => c.name === 'error_code')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN error_code TEXT');
+  }
+  if (taskColsRetry.length > 0 && !taskColsRetry.some(c => c.name === 'parent_task_id')) {
+    db.exec('ALTER TABLE claude_tasks ADD COLUMN parent_task_id TEXT');
+  }
+
   // v0.9.0: Software repo, config index, template_software tables
   // Create individually to avoid re-running full schema.sql (which can cause ALTER TABLE conflicts)
   const v09Exists = db.prepare(

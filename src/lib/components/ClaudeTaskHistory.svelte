@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ClaudeTask } from '$lib/types/claude';
+	import type { ClaudeTask, ClaudeTaskEvent } from '$lib/types/claude';
 	import { addToast } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -12,9 +12,34 @@
 	let expandedTask = $state<string | null>(null);
 	let resuming = $state<string | null>(null);
 	let retrying = $state<string | null>(null);
+	let taskEvents = $state<Map<string, ClaudeTaskEvent[]>>(new Map());
+	let loadingEvents = $state<string | null>(null);
 
 	function toggleExpand(taskId: string) {
-		expandedTask = expandedTask === taskId ? null : taskId;
+		if (expandedTask === taskId) {
+			expandedTask = null;
+		} else {
+			expandedTask = taskId;
+			fetchEvents(taskId);
+		}
+	}
+
+	async function fetchEvents(taskId: string) {
+		if (taskEvents.has(taskId)) return;
+		loadingEvents = taskId;
+		try {
+			const res = await fetch(`/api/claude/tasks/${taskId}/events`);
+			if (res.ok) {
+				const body = await res.json();
+				const newMap = new Map(taskEvents);
+				newMap.set(taskId, body.events ?? []);
+				taskEvents = newMap;
+			}
+		} catch {
+			// Non-critical — events just won't show
+		} finally {
+			loadingEvents = null;
+		}
 	}
 
 	function formatDuration(start: string | null, end: string | null): string {
@@ -32,6 +57,18 @@
 	function formatCost(cost: number | null): string {
 		if (cost === null || cost === undefined) return '-';
 		return `$${cost.toFixed(4)}`;
+	}
+
+	function eventIcon(type: string): string {
+		switch (type) {
+			case 'init': return '▶';
+			case 'tool_use': return '🔧';
+			case 'tool_result': return '📋';
+			case 'text': return '💬';
+			case 'result': return '🏁';
+			case 'error': return '⚠';
+			default: return '•';
+		}
 	}
 
 	async function resumeTask(taskId: string) {
@@ -90,9 +127,15 @@
 				<div class="task-header" onclick={() => toggleExpand(task.id)}>
 					<div class="task-info">
 						<span class="badge badge-{task.status}">{task.status}</span>
+						{#if task.error_code}
+							<span class="error-code">{task.error_code}</span>
+						{/if}
 						<span class="task-prompt">{task.prompt.slice(0, 100)}{task.prompt.length > 100 ? '...' : ''}</span>
 					</div>
 					<div class="task-meta">
+						{#if task.retry_count > 0}
+							<span class="retry-badge">retry {task.retry_count}/{task.max_retries}</span>
+						{/if}
 						{#if showEnvId && task.env_id}
 							<code class="env-id">{task.env_id.slice(0, 8)}</code>
 						{/if}
@@ -106,22 +149,44 @@
 
 				{#if expandedTask === task.id}
 					<div class="task-detail">
-						<div class="detail-section">
-							<span class="detail-label">Prompt</span>
-							<pre class="detail-content">{task.prompt}</pre>
-						</div>
-						{#if task.result}
-							<div class="detail-section">
-								<span class="detail-label">Result</span>
-								<pre class="detail-content">{task.result.slice(0, 2000)}</pre>
-							</div>
-						{/if}
 						{#if task.error_message}
 							<div class="detail-section">
 								<span class="detail-label">Error</span>
 								<pre class="detail-content error">{task.error_message}</pre>
 							</div>
 						{/if}
+						{#if task.result && !task.error_message}
+							<div class="detail-section">
+								<span class="detail-label">Result</span>
+								<pre class="detail-content">{task.result.slice(0, 2000)}</pre>
+							</div>
+						{/if}
+
+						<!-- Structured events -->
+						{#if loadingEvents === task.id}
+							<div class="detail-section">
+								<span class="detail-label">Activity</span>
+								<div class="events-loading">Loading events...</div>
+							</div>
+						{:else if taskEvents.get(task.id)?.length}
+							<div class="detail-section">
+								<span class="detail-label">Activity ({taskEvents.get(task.id)?.length} events)</span>
+								<div class="events-list">
+									{#each taskEvents.get(task.id) ?? [] as event (event.seq)}
+										<div class="event-row event-type-{event.type}">
+											<span class="event-icon">{eventIcon(event.type)}</span>
+											<span class="event-summary">{event.summary}</span>
+											<span class="event-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/if}
+
+						<div class="detail-section">
+							<span class="detail-label">Prompt</span>
+							<pre class="detail-content">{task.prompt}</pre>
+						</div>
 						<div class="detail-row">
 							{#if task.session_id}
 								<div class="detail-item">
@@ -195,6 +260,26 @@
 		gap: 10px;
 		flex: 1;
 		min-width: 0;
+	}
+
+	.error-code {
+		font-size: 0.625rem;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--error);
+		background-color: rgba(239, 68, 68, 0.08);
+		padding: 1px 5px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+
+	.retry-badge {
+		font-size: 0.625rem;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--warning, #f59e0b);
+		background-color: rgba(245, 158, 11, 0.08);
+		padding: 1px 5px;
+		border-radius: 3px;
+		flex-shrink: 0;
 	}
 
 	.task-prompt {
@@ -295,6 +380,70 @@
 	.detail-actions {
 		display: flex;
 		gap: 8px;
+	}
+
+	.events-loading {
+		font-size: 0.8125rem;
+		color: var(--text-secondary);
+		padding: 8px 0;
+	}
+
+	.events-list {
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		max-height: 300px;
+		overflow-y: auto;
+		background-color: var(--bg-primary);
+	}
+
+	.event-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 5px 12px;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+		font-size: 0.75rem;
+	}
+
+	.event-row:last-child {
+		border-bottom: none;
+	}
+
+	.event-row.event-type-tool_use {
+		background-color: rgba(59, 130, 246, 0.04);
+	}
+
+	.event-row.event-type-error {
+		background-color: rgba(239, 68, 68, 0.04);
+	}
+
+	.event-row.event-type-result {
+		background-color: rgba(34, 197, 94, 0.04);
+	}
+
+	.event-icon {
+		flex-shrink: 0;
+		width: 18px;
+		text-align: center;
+		font-size: 0.6875rem;
+		line-height: 1.5;
+	}
+
+	.event-summary {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--text-primary);
+	}
+
+	.event-time {
+		flex-shrink: 0;
+		font-size: 0.625rem;
+		color: var(--text-secondary);
+		font-family: 'SF Mono', 'Fira Code', monospace;
 	}
 
 	.empty-state {
