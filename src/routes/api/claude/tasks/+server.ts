@@ -26,6 +26,7 @@ export const POST: RequestHandler = async ({ request }) => {
     const code = (err as { code?: string })?.code ?? 'DISPATCH_ERROR';
     const message = (err as { message?: string })?.message ?? 'Failed to dispatch task';
     const status = code === 'NOT_FOUND' ? 404 :
+                   code === 'NOT_INSTALLED' ? 422 :
                    code === 'RATE_LIMITED' ? 429 :
                    code === 'ALREADY_RUNNING' ? 409 : 500;
     return json({ code, message }, { status });

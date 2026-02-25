@@ -681,11 +681,18 @@ async function createViaCommunityScript(
 
   // Install Claude CLI if requested (opt-in)
   if (req.install_claude) {
+    logProvisioningStep(id, 'claude_install', 'running', 'Installing Claude Code...');
+    broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Installing Claude Code...', status: 'running' });
     try {
       const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
       await installClaudeInEnvironment(ctx.exec);
+      logProvisioningStep(id, 'claude_install', 'success', 'Claude Code installed.');
+      broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Claude Code installed.', status: 'success' });
     } catch (claudeErr) {
-      console.warn('[spyre] Claude CLI installation failed (non-fatal):', claudeErr);
+      const msg = claudeErr instanceof Error ? claudeErr.message : String(claudeErr);
+      logProvisioningStep(id, 'claude_install', 'error', msg);
+      broadcastProvisioningEvent(id, { phase: 'claude_install', step: msg, status: 'error' });
+      // Still non-fatal — don't fail the entire provisioning
     }
   }
 
@@ -953,11 +960,18 @@ async function createViaProxmoxApi(
 
   // Install Claude CLI if requested (opt-in)
   if (req.install_claude) {
+    logProvisioningStep(id, 'claude_install', 'running', 'Installing Claude Code...');
+    broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Installing Claude Code...', status: 'running' });
     try {
       const ctx = buildProvisionerContext(id, vmid, ipAddress, rootPassword);
       await installClaudeInEnvironment(ctx.exec);
+      logProvisioningStep(id, 'claude_install', 'success', 'Claude Code installed.');
+      broadcastProvisioningEvent(id, { phase: 'claude_install', step: 'Claude Code installed.', status: 'success' });
     } catch (claudeErr) {
-      console.warn('[spyre] Claude CLI installation failed (non-fatal):', claudeErr);
+      const msg = claudeErr instanceof Error ? claudeErr.message : String(claudeErr);
+      logProvisioningStep(id, 'claude_install', 'error', msg);
+      broadcastProvisioningEvent(id, { phase: 'claude_install', step: msg, status: 'error' });
+      // Still non-fatal — don't fail the entire provisioning
     }
   }
 

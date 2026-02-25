@@ -44,7 +44,8 @@
 			post_provision: 'Post-Provision',
 			community_script: 'Community Script',
 			software_pool: 'Software Installation',
-			custom_script: 'Custom Script'
+			custom_script: 'Custom Script',
+			claude_install: 'Claude Code'
 		};
 		return map[phase] ?? phase;
 	}

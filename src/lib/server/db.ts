@@ -195,6 +195,29 @@ function applyMigrations(db: Database.Database): void {
     `);
   }
 
+  // Add 'claude_install' phase to provisioning_log CHECK constraint
+  const provLogCheck2 = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='provisioning_log'"
+  ).get() as { sql: string } | undefined;
+  if (provLogCheck2 && !provLogCheck2.sql.includes("'claude_install'")) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS provisioning_log_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_id      TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        phase       TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script', 'claude_install', 'complete', 'error')),
+        step        TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'skipped')),
+        output      TEXT,
+        started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT
+      );
+      INSERT OR IGNORE INTO provisioning_log_new SELECT * FROM provisioning_log;
+      DROP TABLE provisioning_log;
+      ALTER TABLE provisioning_log_new RENAME TO provisioning_log;
+      CREATE INDEX IF NOT EXISTS idx_provisioning_log_env ON provisioning_log(env_id);
+    `);
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

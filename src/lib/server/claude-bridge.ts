@@ -54,7 +54,7 @@ async function verifyClaudeInstalled(envId: string): Promise<boolean> {
     const client = await getConnection(envId);
     const result = await new Promise<{ code: number; stdout: string }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timeout')), 10000);
-      client.exec('which claude 2>/dev/null || command -v claude 2>/dev/null', (err, stream) => {
+      client.exec('which claude 2>/dev/null || command -v claude 2>/dev/null || { [ -x /usr/local/bin/claude ] && echo /usr/local/bin/claude; }', (err, stream) => {
         if (err) { clearTimeout(timer); reject(err); return; }
         let stdout = '';
         stream.on('data', (d: Buffer) => { stdout += d.toString(); });

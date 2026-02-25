@@ -484,13 +484,83 @@ export async function installClaudeInEnvironment(
     const checkResult = await exec('which claude 2>/dev/null || command -v claude 2>/dev/null', 5000);
     if (checkResult.code !== 0) {
       console.log('[spyre] Installing Claude CLI in environment...');
-      await exec('curl -fsSL https://claude.ai/install.sh | sh', 120000);
-      console.log('[spyre] Claude CLI installed in environment');
+
+      // Ensure curl is available — minimal LXC templates (Debian, Alpine) don't ship it
+      const hasCurl = await exec('which curl 2>/dev/null', 3000);
+      if (hasCurl.code !== 0) {
+        console.log('[spyre] curl not found — installing it first...');
+        // Try apt (Debian/Ubuntu), then apk (Alpine), then dnf/yum (RHEL)
+        await exec(
+          'apt-get update -qq && apt-get install -y -qq curl 2>&1 || ' +
+          'apk add --no-cache curl 2>&1 || ' +
+          'dnf install -y -q curl 2>&1 || ' +
+          'yum install -y -q curl 2>&1',
+          120000
+        );
+      }
+
+      // Try the official installer first
+      const installResult = await exec('curl -fsSL https://claude.ai/install.sh | sh 2>&1', 180000);
+      console.log(`[spyre] Claude install script exit code: ${installResult.code}`);
+      if (installResult.stdout) {
+        console.log(`[spyre] Claude install output:\n${installResult.stdout.slice(-2000)}`);
+      }
+
+      // Check if the installer actually made `claude` available.
+      // The installer's `claude install` subcommand often fails in non-interactive
+      // SSH/pct-exec contexts (no TTY). Search everywhere for the binary.
+      const searchResult = await exec(
+        'export PATH="/root/.local/bin:/root/.claude/local/bin:$PATH"; ' +
+        'which claude 2>/dev/null || ' +
+        'command -v claude 2>/dev/null || ' +
+        'find / -name claude \\( -type f -o -type l \\) -executable 2>/dev/null | head -1',
+        15000
+      );
+      const foundBinary = searchResult.stdout.trim().split('\n')[0];
+      console.log(`[spyre] Binary search result: "${foundBinary}" (exit ${searchResult.code})`);
+
+      if (foundBinary && foundBinary.startsWith('/')) {
+        // Found it — ensure it's accessible system-wide via /usr/local/bin
+        if (foundBinary !== '/usr/local/bin/claude') {
+          await exec(`ln -sf '${foundBinary}' /usr/local/bin/claude`, 5000);
+          console.log(`[spyre] Symlinked ${foundBinary} -> /usr/local/bin/claude`);
+        }
+      } else {
+        // Official installer didn't produce a usable binary.
+        // Fallback: download the binary directly and place it in /usr/local/bin.
+        console.log('[spyre] Official installer did not produce a binary — downloading directly...');
+        const directInstall = await exec(
+          'set -e; ' +
+          'GCS="https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"; ' +
+          'case "$(uname -m)" in x86_64|amd64) arch="x64" ;; arm64|aarch64) arch="arm64" ;; *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;; esac; ' +
+          'if ldd /bin/ls 2>&1 | grep -q musl; then platform="linux-${arch}-musl"; else platform="linux-${arch}"; fi; ' +
+          'version=$(curl -fsSL "$GCS/latest"); ' +
+          'curl -fsSL -o /tmp/claude-dl "$GCS/$version/$platform/claude"; ' +
+          'chmod +x /tmp/claude-dl; ' +
+          'mv /tmp/claude-dl /usr/local/bin/claude; ' +
+          'echo "direct-install: /usr/local/bin/claude $version $platform"',
+          120000
+        );
+        console.log(`[spyre] Direct install: ${directInstall.stdout.trim()}`);
+        if (directInstall.code !== 0) {
+          throw new Error(`Direct binary download failed (exit ${directInstall.code}): ${(directInstall.stdout + directInstall.stderr).slice(-500)}`);
+        }
+      }
+
+      // Final verification
+      const verifyResult = await exec('claude --version 2>&1', 15000);
+      const verifyOut = verifyResult.stdout.trim();
+      if (verifyResult.code !== 0) {
+        throw new Error(`Claude binary not functional after install: ${verifyOut.slice(-300)}`);
+      }
+      console.log(`[spyre] Claude CLI verified: ${verifyOut}`);
     } else {
-      console.log('[spyre] Claude CLI already installed in environment');
+      console.log(`[spyre] Claude CLI already installed: ${checkResult.stdout.trim()}`);
     }
   } catch (err) {
     console.warn('[spyre] Claude CLI installation failed (non-fatal):', err);
+    // Re-throw so the caller (environments.ts) can log it as a provisioning error step
+    throw err;
   }
 
   // Propagate controller's Claude auth credentials into environment (non-fatal)

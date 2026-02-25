@@ -13,7 +13,8 @@
 			post_provision: 'Configuring...',
 			community_script: 'Installing app...',
 			software_pool: 'Installing packages...',
-			custom_script: 'Running script...'
+			custom_script: 'Running script...',
+			claude_install: 'Installing Claude...'
 		};
 		return map[phase] ?? phase;
 	}
