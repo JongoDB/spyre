@@ -4,6 +4,7 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import { getConnection } from './ssh-pool';
 import { getEnvironment } from './environments';
+import { ensureAndPropagateAuth } from './claude-auth';
 import type { ClaudeTask, ClaudeTaskEvent, ClaudeDispatchOptions } from '$lib/types/claude';
 
 // =============================================================================
@@ -214,8 +215,8 @@ export function categorizeError(
 ): ErrorCategory {
   const lower = (stderr + ' ' + stdout).toLowerCase();
 
-  if (lower.includes('not authenticated') || lower.includes('unauthorized') || lower.includes('invalid api key')) {
-    return { code: 'AUTH_EXPIRED', status: 'auth_required', message: 'Claude authentication expired', retryable: false };
+  if (lower.includes('not authenticated') || lower.includes('unauthorized') || lower.includes('invalid api key') || lower.includes('auth_hang')) {
+    return { code: 'AUTH_EXPIRED', status: 'auth_required', message: 'Claude authentication expired or missing — re-authenticate via Settings', retryable: false };
   }
   if (lower.includes('rate limit') || lower.includes('429')) {
     return { code: 'RATE_LIMITED', status: 'error', message: 'Rate limited by Claude API', retryable: true };
@@ -500,15 +501,30 @@ async function executeTask(
   const tracked = setupStreamParsing(taskId, parser);
 
   try {
+    // Pre-dispatch: ensure fresh token and propagate to environment
+    try {
+      await ensureAndPropagateAuth(envId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[spyre] Pre-dispatch auth propagation failed: ${msg}`);
+      // Don't abort — credentials may already be valid on the target
+    }
+
     const client = await getConnection(envId);
 
-    // Build the claude command
+    // Build the claude command.
+    // - Use CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 to skip telemetry/update checks
+    // - Use --allowedTools instead of --dangerously-skip-permissions (which fails as root)
     const escapedPrompt = prompt.replace(/'/g, "'\\''");
-    let cmd = `claude -p '${escapedPrompt}' --output-format stream-json --dangerously-skip-permissions`;
-    if (workingDir) {
-      const escapedDir = workingDir.replace(/'/g, "'\\''");
-      cmd = `cd '${escapedDir}' && ${cmd}`;
-    }
+    const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
+    const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
+    const cdPart = workingDir ? `cd '${workingDir.replace(/'/g, "'\\''")}' && ` : '';
+    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --allowedTools '${allowedTools}'`;
+    // Wrap in `script -qc` to provide a PTY. Claude CLI stalls during startup
+    // (Statsig feature-flag fetch) when stdout is not a TTY, which happens with
+    // ssh2's exec() channel. `script -qc` creates a pseudo-terminal wrapper.
+    const cmd = `${envExports} script -qc "${claudeInvocation.replace(/"/g, '\\"')}" /dev/null`;
+
 
     const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -519,9 +535,90 @@ async function executeTask(
         reject(new Error(`Task timed out after ${taskTimeout}ms`));
       }, taskTimeout);
 
+      // No-output watchdog: if Claude CLI produces zero stdout within 30s,
+      // it's likely hung (expired auth token, onboarding wizard, etc.).
+      // Proactively check auth and abort with a clear error.
+      const noOutputTimeout = config.claude?.no_output_timeout ?? 5000;
+      let gotOutput = false;
+      let noOutputTimer: ReturnType<typeof setTimeout> | null = null;
+
+      function startNoOutputWatchdog() {
+        noOutputTimer = setTimeout(async () => {
+          if (gotOutput || taskState.aborted) return;
+          console.warn(`[spyre] Task ${taskId}: no output after ${noOutputTimeout}ms — checking auth...`);
+
+          // Check auth status AND token expiry on the environment.
+          // `claude auth status` reports loggedIn=true even with expired tokens,
+          // so we also read the credentials file to check expiresAt directly.
+          try {
+            const authCheck = await new Promise<{ code: number; stdout: string }>((res, rej) => {
+              const t = setTimeout(() => rej(new Error('auth check timeout')), 10000);
+              client.exec(
+                'claude auth status 2>&1; echo "---CREDS---"; cat ~/.claude/.credentials.json 2>/dev/null || echo "{}"',
+                (e, s) => {
+                  if (e) { clearTimeout(t); rej(e); return; }
+                  let out = '';
+                  s.on('data', (d: Buffer) => { out += d.toString(); });
+                  s.stderr.on('data', () => { /* consume */ });
+                  s.on('close', (c: number) => { clearTimeout(t); res({ code: c ?? 0, stdout: out }); });
+                }
+              );
+            });
+
+            let isAuthIssue = false;
+            const parts = authCheck.stdout.split('---CREDS---');
+            const authStatusPart = parts[0] ?? '';
+            const credsPart = (parts[1] ?? '').trim();
+
+            // Check auth status output
+            try {
+              const authData = JSON.parse(authStatusPart.trim());
+              if (!authData.loggedIn) isAuthIssue = true;
+            } catch {
+              const lower = authStatusPart.toLowerCase();
+              if (lower.includes('not logged in') || lower.includes('not authenticated') || authCheck.code !== 0) {
+                isAuthIssue = true;
+              }
+            }
+
+            // Check token expiry from credentials file
+            if (!isAuthIssue) {
+              try {
+                const creds = JSON.parse(credsPart);
+                // Check both top-level and nested OAuth token formats
+                const oauthData = creds.claudeAiOauth ?? creds;
+                const expiresAt = oauthData.expiresAt as number | undefined;
+                if (expiresAt && expiresAt < Date.now()) {
+                  console.warn(`[spyre] Task ${taskId}: OAuth token expired at ${new Date(expiresAt).toISOString()}`);
+                  isAuthIssue = true;
+                }
+              } catch {
+                // Can't parse creds — not conclusive
+              }
+            }
+
+            if (isAuthIssue) {
+              taskState.aborted = true;
+              clearTimeout(timer);
+              if (taskState.channel) {
+                try { taskState.channel.close(); } catch { /* ignore */ }
+              }
+              reject(new Error('AUTH_HANG: Claude CLI not authenticated — token may be expired. Re-authenticate via Settings > Claude Auth.'));
+              return;
+            }
+          } catch {
+            // Auth check itself failed — don't abort, let the main timeout handle it
+          }
+
+          // Auth looks OK but still no output — could be slow network or large prompt
+          console.warn(`[spyre] Task ${taskId}: no output after ${noOutputTimeout}ms but auth looks OK — Claude may be slow`);
+        }, noOutputTimeout);
+      }
+
       client.exec(cmd, (err, stream) => {
         if (err) {
           clearTimeout(timer);
+          if (noOutputTimer) clearTimeout(noOutputTimer);
           reject(err);
           return;
         }
@@ -530,10 +627,17 @@ async function executeTask(
         let stdout = '';
         let stderr = '';
 
+        startNoOutputWatchdog();
+
         stream.on('data', (data: Buffer) => {
           const chunk = data.toString();
           stdout += chunk;
           accumulatedOutput += chunk;
+
+          if (!gotOutput) {
+            gotOutput = true;
+            if (noOutputTimer) { clearTimeout(noOutputTimer); noOutputTimer = null; }
+          }
 
           // Feed to structured parser
           parser.feed(chunk);
@@ -562,11 +666,13 @@ async function executeTask(
 
         stream.on('close', (code: number) => {
           clearTimeout(timer);
+          if (noOutputTimer) clearTimeout(noOutputTimer);
           resolve({ code: code ?? 0, stdout, stderr });
         });
 
         stream.on('error', (streamErr: Error) => {
           clearTimeout(timer);
+          if (noOutputTimer) clearTimeout(noOutputTimer);
           reject(streamErr);
         });
       });
@@ -760,9 +866,20 @@ async function executeResumeTask(
   const tracked = setupStreamParsing(taskId, parser);
 
   try {
+    // Pre-dispatch: ensure fresh token and propagate
+    try {
+      await ensureAndPropagateAuth(envId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[spyre] Pre-dispatch auth propagation failed (resume): ${msg}`);
+    }
+
     const client = await getConnection(envId);
     const escapedSession = sessionId.replace(/'/g, "'\\''");
-    const cmd = `claude --resume '${escapedSession}' --output-format stream-json --dangerously-skip-permissions`;
+    const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
+    const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
+    const resumeInvocation = `claude --resume '${escapedSession}' --output-format stream-json --verbose --allowedTools '${allowedTools}'`;
+    const cmd = `${envExports} script -qc "${resumeInvocation.replace(/"/g, '\\"')}" /dev/null`;
 
     const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
       const timer = setTimeout(() => {

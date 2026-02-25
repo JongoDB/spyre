@@ -557,6 +557,23 @@ export async function installClaudeInEnvironment(
     } else {
       console.log(`[spyre] Claude CLI already installed: ${checkResult.stdout.trim()}`);
     }
+
+    // Seed ~/.claude.json to skip interactive onboarding wizard.
+    // Claude Code checks hasCompletedOnboarding and theme on startup — if either
+    // is missing it launches the interactive wizard, which blocks headless execution.
+    await exec(
+      `node -e "` +
+        `const fs = require('fs');` +
+        `const p = (process.env.CLAUDE_CONFIG_DIR || process.env.HOME) + '/.claude.json';` +
+        `let c = {};` +
+        `try { c = JSON.parse(fs.readFileSync(p, 'utf8')); } catch(e) {}` +
+        `c.hasCompletedOnboarding = true;` +
+        `if (!c.theme) c.theme = 'dark';` +
+        `fs.writeFileSync(p, JSON.stringify(c, null, 2));` +
+      `"`,
+      10000
+    );
+    console.log('[spyre] Claude config seeded (hasCompletedOnboarding + theme)');
   } catch (err) {
     console.warn('[spyre] Claude CLI installation failed (non-fatal):', err);
     // Re-throw so the caller (environments.ts) can log it as a provisioning error step
@@ -610,6 +627,123 @@ async function propagateClaudeAuth(
   await exec(`chmod 600 '${envClaudeDir}/.credentials.json'`, 5000);
 
   console.log('[spyre] Claude credentials propagated to environment');
+
+  // Write .claude.json (inside ~/.claude/) with full config to skip onboarding
+  const claudeJsonData = buildClaudeJson(authPath);
+  if (claudeJsonData) {
+    // Use the container's actual Claude version for lastOnboardingVersion
+    try {
+      const versionResult = await exec('claude --version 2>/dev/null', 10000);
+      const installedVersion = versionResult.stdout.trim();
+      if (installedVersion) {
+        claudeJsonData.lastOnboardingVersion = installedVersion;
+        claudeJsonData.lastReleaseNotesSeen = installedVersion;
+        console.log(`[spyre] Using container Claude version for onboarding: ${installedVersion}`);
+      }
+    } catch {
+      // keep controller's version as fallback
+    }
+
+    const claudeJsonContent = JSON.stringify(claudeJsonData, null, 2);
+    const writeClaudeJson = `cat > '${envClaudeDir}/.claude.json' << 'SPYRE_CLAUDEJSON_EOF'\n${claudeJsonContent}\nSPYRE_CLAUDEJSON_EOF`;
+    await exec(writeClaudeJson, 10000);
+    await exec(`chmod 600 '${envClaudeDir}/.claude.json'`, 5000);
+    console.log('[spyre] Claude config (~/.claude/.claude.json) propagated');
+  }
+
+  // Also write ~/.claude.json at home root — Claude Code checks this location
+  // for install/init state separately from ~/.claude/.claude.json
+  const homeClaudeJson = buildHomeClaudeJson();
+  if (homeClaudeJson) {
+    const homeContent = JSON.stringify(homeClaudeJson, null, 2);
+    const writeHomeJson = `cat > '${baseDir}/.claude.json' << 'SPYRE_HOMECJ_EOF'\n${homeContent}\nSPYRE_HOMECJ_EOF`;
+    await exec(writeHomeJson, 10000);
+    await exec(`chmod 600 '${baseDir}/.claude.json'`, 5000);
+    console.log('[spyre] Claude home config (~/.claude.json) propagated');
+  }
+
+  // Verify auth status in the container
+  try {
+    const verifyResult = await exec('claude auth status 2>&1', 15000);
+    console.log(`[spyre] Claude auth verification: exit=${verifyResult.code} output=${verifyResult.stdout.trim().slice(0, 200)}`);
+  } catch (err) {
+    console.warn('[spyre] Claude auth verification failed (non-fatal):', err);
+  }
+}
+
+/**
+ * Read the controller's .claude.json and build a copy suitable for containers.
+ * Copies the full config (auth, onboarding, initialization state) but strips
+ * controller-specific paths. Returns a mutable object so callers can patch
+ * version-specific fields.
+ */
+function buildClaudeJson(credentialsPath: string): Record<string, unknown> | null {
+  // .claude.json lives alongside .credentials.json in the same directory
+  const claudeJsonPath = credentialsPath.replace(/\.credentials\.json$/, '.claude.json');
+
+  if (!existsSync(claudeJsonPath)) {
+    console.log('[spyre] No controller .claude.json found, skipping config propagation');
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(claudeJsonPath, 'utf-8');
+    const full = JSON.parse(raw) as Record<string, unknown>;
+
+    // Copy everything, then strip controller-specific fields
+    const config = { ...full };
+    delete config.projects;
+    delete config.githubRepoPaths;
+
+    // Ensure critical auth/init fields are set
+    config.hasCompletedOnboarding = true;
+    if (!config.theme) config.theme = 'dark';
+    if (!config.numStartups || (config.numStartups as number) < 1) {
+      config.numStartups = 1;
+    }
+
+    return config;
+  } catch (err) {
+    console.warn('[spyre] Failed to read/parse controller .claude.json:', err);
+    return null;
+  }
+}
+
+/**
+ * Build the home-root ~/.claude.json that Claude Code checks for install/init state.
+ * This is separate from ~/.claude/.claude.json and contains installation metadata.
+ */
+function buildHomeClaudeJson(): Record<string, unknown> | null {
+  const home = process.env.HOME ?? '/root';
+  const homePath = `${home}/.claude.json`;
+
+  let config: Record<string, unknown>;
+
+  if (!existsSync(homePath)) {
+    // No home-root config on controller; create a minimal one
+    config = {
+      installMethod: 'native',
+      autoUpdates: false,
+      firstStartTime: new Date().toISOString(),
+      opusProMigrationComplete: true,
+      sonnet1m45MigrationComplete: true,
+      autoUpdatesProtectedForNative: true
+    };
+  } else {
+    try {
+      const raw = readFileSync(homePath, 'utf-8');
+      config = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  // Ensure onboarding bypass fields are always set — Claude Code launches
+  // the interactive wizard if either is missing, blocking headless execution
+  config.hasCompletedOnboarding = true;
+  if (!config.theme) config.theme = 'dark';
+
+  return config;
 }
 
 // =============================================================================

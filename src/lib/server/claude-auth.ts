@@ -1,9 +1,53 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes, createHash } from 'node:crypto';
 import { getDb } from './db';
 import { getEnvConfig } from './env-config';
+import { getConnection } from './ssh-pool';
+import { sshExec } from './tmux-controller';
 import type { ClaudeAuthState, ClaudeCliStatus } from '$lib/types/claude';
+
+// =============================================================================
+// OAuth Constants
+// =============================================================================
+
+const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
+const OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
+const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
+
+/** Refresh 5 minutes before actual expiry */
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+/** Mutex: prevent concurrent refresh requests (refresh tokens are single-use) */
+let refreshInFlight: Promise<OAuthTokens | null> | null = null;
+
+// =============================================================================
+// OAuth Types
+// =============================================================================
+
+export interface OAuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scopes?: string[];
+  subscriptionType?: string;
+  rateLimitTier?: string;
+}
+
+export interface OAuthFlowParams {
+  authorizeUrl: string;
+  codeVerifier: string;
+  state: string;
+}
+
+export interface TokenRefreshResult {
+  success: boolean;
+  expiresAt?: number;
+  error?: string;
+}
 
 // =============================================================================
 // Claude Auth Relay — Manages OAuth lifecycle for Claude CLI
@@ -94,6 +138,359 @@ function readAuthJson(): { authenticated: boolean; expiresAt: string | null } {
   } catch {
     return { authenticated: false, expiresAt: null };
   }
+}
+
+// =============================================================================
+// OAuth Token Management
+// =============================================================================
+
+/**
+ * Read OAuth tokens from the controller's credential file.
+ */
+export function readOAuthTokens(): OAuthTokens | null {
+  const path = resolveAuthJsonPath();
+  if (!existsSync(path)) return null;
+
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    const oauth = (data.claudeAiOauth ?? data.oauthAccount) as OAuthTokens | undefined;
+    if (!oauth?.accessToken || !oauth?.refreshToken) return null;
+    return oauth;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write updated OAuth tokens back to the credential file.
+ * Preserves other fields in the file.
+ */
+function writeOAuthTokens(tokens: OAuthTokens): void {
+  const path = resolveAuthJsonPath();
+
+  let existing: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      existing = JSON.parse(readFileSync(path, 'utf-8'));
+    } catch {
+      // Start fresh if file is corrupt
+    }
+  }
+
+  existing.claudeAiOauth = {
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: tokens.expiresAt,
+    scopes: tokens.scopes ?? ['user:inference', 'user:profile'],
+    subscriptionType: tokens.subscriptionType,
+    rateLimitTier: tokens.rateLimitTier,
+  };
+
+  writeFileSync(path, JSON.stringify(existing, null, 2));
+}
+
+/**
+ * Check if the access token is expired (or expiring within the buffer window).
+ */
+export function isTokenExpired(tokens: OAuthTokens): boolean {
+  return tokens.expiresAt < (Date.now() + TOKEN_REFRESH_BUFFER_MS);
+}
+
+/**
+ * Exchange a refresh token for a new access token via Anthropic's OAuth endpoint.
+ * Refresh tokens are single-use — the response includes a new refresh token.
+ */
+async function refreshAccessToken(refreshToken: string): Promise<OAuthTokens | null> {
+  try {
+    const response = await fetch(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: OAUTH_CLIENT_ID,
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      console.error(`[spyre] Token refresh failed: ${response.status} ${response.statusText} — ${body.slice(0, 300)}`);
+      return null;
+    }
+
+    const data = await response.json() as Record<string, unknown>;
+    return {
+      accessToken: data.access_token as string,
+      refreshToken: data.refresh_token as string,
+      expiresAt: Date.now() + (data.expires_in as number) * 1000,
+      scopes: typeof data.scope === 'string' ? (data.scope as string).split(' ') : undefined,
+    };
+  } catch (err) {
+    console.error('[spyre] Token refresh error:', err);
+    return null;
+  }
+}
+
+/**
+ * Ensure the controller has a fresh (non-expired) access token.
+ * Automatically refreshes via the OAuth endpoint if expired.
+ * Uses a mutex to prevent concurrent refresh races (single-use refresh tokens).
+ */
+export async function ensureFreshToken(): Promise<TokenRefreshResult> {
+  const tokens = readOAuthTokens();
+  if (!tokens) {
+    return { success: false, error: 'No OAuth credentials found on controller' };
+  }
+
+  if (!isTokenExpired(tokens)) {
+    return { success: true, expiresAt: tokens.expiresAt };
+  }
+
+  // Prevent concurrent refresh (refresh tokens are single-use)
+  if (refreshInFlight) {
+    const result = await refreshInFlight;
+    if (result) return { success: true, expiresAt: result.expiresAt };
+    return { success: false, error: 'Token refresh failed (concurrent request)' };
+  }
+
+  refreshInFlight = (async () => {
+    try {
+      console.log('[spyre] Access token expired, refreshing via OAuth endpoint...');
+      const refreshed = await refreshAccessToken(tokens.refreshToken);
+      if (!refreshed) return null;
+
+      // Preserve subscription metadata
+      refreshed.subscriptionType = tokens.subscriptionType;
+      refreshed.rateLimitTier = tokens.rateLimitTier;
+
+      writeOAuthTokens(refreshed);
+      console.log(`[spyre] Token refreshed, new expiry: ${new Date(refreshed.expiresAt).toISOString()}`);
+
+      // Update auth state
+      setState({
+        status: 'authenticated',
+        lastAuthenticated: new Date().toISOString(),
+        tokenExpiresAt: new Date(refreshed.expiresAt).toISOString(),
+        error: null,
+      });
+      logAuthEvent('token_refreshed', { expiresAt: refreshed.expiresAt });
+
+      return refreshed;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  const result = await refreshInFlight;
+  if (result) return { success: true, expiresAt: result.expiresAt };
+  return { success: false, error: 'Token refresh failed — user may need to re-authenticate' };
+}
+
+// =============================================================================
+// OAuth PKCE Flow (for client-browser auth)
+// =============================================================================
+
+/**
+ * Generate OAuth PKCE parameters for a new authorization flow.
+ * The client browser opens the authorizeUrl, user authorizes on claude.ai,
+ * then provides the resulting authorization code back to Spyre.
+ */
+export function generateOAuthFlow(): OAuthFlowParams {
+  const verifierBytes = randomBytes(32);
+  const codeVerifier = verifierBytes
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const codeChallenge = createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const state = codeVerifier;
+
+  const params = new URLSearchParams({
+    code: 'true',
+    client_id: OAUTH_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: OAUTH_REDIRECT_URI,
+    scope: OAUTH_SCOPES,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+    state,
+  });
+
+  return {
+    authorizeUrl: `${OAUTH_AUTHORIZE_URL}?${params.toString()}`,
+    codeVerifier,
+    state,
+  };
+}
+
+/**
+ * Exchange an authorization code for tokens (completes the PKCE flow).
+ * Called after the user authorizes in their browser and provides the code.
+ */
+export async function exchangeAuthCode(
+  code: string,
+  codeVerifier: string
+): Promise<TokenRefreshResult> {
+  try {
+    const response = await fetch(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        state: codeVerifier,
+        grant_type: 'authorization_code',
+        client_id: OAUTH_CLIENT_ID,
+        redirect_uri: OAUTH_REDIRECT_URI,
+        code_verifier: codeVerifier,
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      console.error(`[spyre] OAuth code exchange failed: ${response.status} — ${body.slice(0, 300)}`);
+      return { success: false, error: `Code exchange failed (${response.status})` };
+    }
+
+    const data = await response.json() as Record<string, unknown>;
+    const tokens: OAuthTokens = {
+      accessToken: data.access_token as string,
+      refreshToken: data.refresh_token as string,
+      expiresAt: Date.now() + (data.expires_in as number) * 1000,
+      scopes: typeof data.scope === 'string' ? (data.scope as string).split(' ') : undefined,
+    };
+
+    writeOAuthTokens(tokens);
+
+    setState({
+      status: 'authenticated',
+      oauthUrl: null,
+      lastAuthenticated: new Date().toISOString(),
+      tokenExpiresAt: new Date(tokens.expiresAt).toISOString(),
+      authMethod: 'oauth',
+      error: null,
+    });
+    logAuthEvent('authenticated', { method: 'oauth_pkce' });
+
+    console.log(`[spyre] OAuth authorization complete, expires: ${new Date(tokens.expiresAt).toISOString()}`);
+    return { success: true, expiresAt: tokens.expiresAt };
+  } catch (err) {
+    console.error('[spyre] OAuth code exchange error:', err);
+    return { success: false, error: 'Code exchange request failed' };
+  }
+}
+
+// =============================================================================
+// Environment Propagation
+// =============================================================================
+
+/**
+ * Propagate the controller's current credentials to a running environment via SSH.
+ */
+export async function propagateCredentialsToEnv(envId: string): Promise<void> {
+  const credsPath = resolveAuthJsonPath();
+  if (!existsSync(credsPath)) {
+    throw new Error('No credentials file on controller');
+  }
+
+  const credsContent = readFileSync(credsPath, 'utf-8');
+  JSON.parse(credsContent); // validate
+
+  const client = await getConnection(envId);
+
+  // Write ~/.claude/.credentials.json
+  await sshExec(client, 'mkdir -p /root/.claude', 10000);
+  const writeCmd = `cat > /root/.claude/.credentials.json << 'SPYRE_CREDS_EOF'\n${credsContent}\nSPYRE_CREDS_EOF`;
+  await sshExec(client, writeCmd, 10000);
+  await sshExec(client, 'chmod 600 /root/.claude/.credentials.json', 5000);
+
+  // Write ~/.claude.json with the controller's cachedGrowthBookFeatures.
+  // Without this cache, Claude CLI makes a blocking Statsig fetch on startup
+  // that stalls for 28+ seconds from container IPs.
+  const homeConfig = buildHomeConfigForEnv();
+  if (homeConfig) {
+    const homeContent = JSON.stringify(homeConfig, null, 2);
+    const writeHome = `cat > /root/.claude.json << 'SPYRE_HOMECFG_EOF'\n${homeContent}\nSPYRE_HOMECFG_EOF`;
+    await sshExec(client, writeHome, 10000);
+    await sshExec(client, 'chmod 600 /root/.claude.json', 5000);
+  }
+}
+
+/**
+ * Build ~/.claude.json for containers from the controller's config.
+ * Includes cachedGrowthBookFeatures (critical — without this, Claude CLI
+ * makes a blocking network call on startup that stalls for 28+ seconds),
+ * onboarding bypass, and install metadata. Strips controller-specific fields.
+ */
+function buildHomeConfigForEnv(): Record<string, unknown> | null {
+  const home = process.env.HOME ?? '/root';
+
+  // First try ~/.claude/.claude.json (inside .claude dir)
+  const claudeDirConfig = resolveAuthJsonPath().replace(/\.credentials\.json$/, '.claude.json');
+  // Then ~/.claude.json (home root)
+  const homeConfig = `${home}/.claude.json`;
+
+  // Merge configs: read both files, prefer the one with cachedGrowthBookFeatures.
+  // The feature flags cache is typically in ~/.claude/.claude.json (the larger file).
+  let source: Record<string, unknown> = {};
+  for (const path of [claudeDirConfig, homeConfig]) {
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+        // Merge — later files fill in missing keys but don't overwrite
+        source = { ...data, ...source };
+      } catch { /* skip unreadable */ }
+    }
+  }
+
+  const config: Record<string, unknown> = {
+    hasCompletedOnboarding: true,
+    theme: source.theme ?? 'dark',
+    installMethod: 'native',
+    autoUpdates: false,
+    autoUpdatesProtectedForNative: true,
+    numStartups: source.numStartups ?? 5,
+    firstStartTime: source.firstStartTime ?? new Date().toISOString(),
+    opusProMigrationComplete: true,
+    sonnet1m45MigrationComplete: true,
+    lastOnboardingVersion: source.lastOnboardingVersion ?? '2.1.50',
+    lastReleaseNotesSeen: source.lastReleaseNotesSeen ?? '2.1.50',
+    hasSeenTasksHint: true,
+    showSpinnerTree: false,
+  };
+
+  // Copy the feature flags cache — this is what prevents the 28s startup stall
+  if (source.cachedGrowthBookFeatures) {
+    config.cachedGrowthBookFeatures = source.cachedGrowthBookFeatures;
+  }
+  if (source.clientDataCache) {
+    config.clientDataCache = source.clientDataCache;
+  }
+  if (source.oauthAccount) {
+    config.oauthAccount = source.oauthAccount;
+  }
+
+  return config;
+}
+
+/**
+ * Ensure fresh token on controller, then propagate to the target environment.
+ * Called automatically before task dispatch.
+ */
+export async function ensureAndPropagateAuth(envId: string): Promise<void> {
+  const result = await ensureFreshToken();
+  if (!result.success) {
+    throw new Error(result.error ?? 'Token refresh failed');
+  }
+
+  await propagateCredentialsToEnv(envId);
 }
 
 // =============================================================================

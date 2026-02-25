@@ -422,6 +422,7 @@
 					envId={env.id}
 					activeTask={claudeActiveTask}
 					onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
+					onTaskCompleted={() => { refreshClaudeData(); }}
 				/>
 			</div>
 

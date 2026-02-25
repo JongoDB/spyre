@@ -39,6 +39,9 @@ export const POST: RequestHandler = async ({ request }) => {
     );
   }
 
+  // Build minimal .claude.json from controller's config (for onboarding bypass)
+  const claudeJsonContent = buildClaudeJson(authPath);
+
   // Get target environments
   const db = getDb();
   let environments: Environment[];
@@ -59,7 +62,7 @@ export const POST: RequestHandler = async ({ request }) => {
   }
 
   // Propagate to each environment
-  const results: Array<{ envId: string; name: string; success: boolean; error?: string }> = [];
+  const results: Array<{ envId: string; name: string; success: boolean; loggedIn?: boolean; error?: string }> = [];
 
   for (const env of environments) {
     try {
@@ -87,7 +90,41 @@ export const POST: RequestHandler = async ({ request }) => {
       // Secure the file
       await sshExec(client, 'chmod 600 /root/.claude/.credentials.json', 5000);
 
-      results.push({ envId: env.id, name: env.name, success: true });
+      // Write ~/.claude/.claude.json to skip onboarding
+      if (claudeJsonContent) {
+        const claudeJsonCopy = { ...claudeJsonContent };
+        try {
+          const versionResult = await sshExec(client, 'claude --version 2>/dev/null', 10000);
+          const installedVersion = versionResult.stdout.trim();
+          if (installedVersion) {
+            claudeJsonCopy.lastOnboardingVersion = installedVersion;
+            claudeJsonCopy.lastReleaseNotesSeen = installedVersion;
+          }
+        } catch {
+          // keep controller's version as fallback
+        }
+
+        const claudeJsonStr = JSON.stringify(claudeJsonCopy, null, 2);
+        const writeClaudeJson = `cat > /root/.claude/.claude.json << 'SPYRE_CLAUDEJSON_EOF'\n${claudeJsonStr}\nSPYRE_CLAUDEJSON_EOF`;
+        await sshExec(client, writeClaudeJson, 10000);
+        await sshExec(client, 'chmod 600 /root/.claude/.claude.json', 5000);
+      }
+
+      // Also write ~/.claude.json at home root — Claude Code checks this
+      // location for install/init state separately
+      const homeJson = buildHomeClaudeJson();
+      if (homeJson) {
+        const homeStr = JSON.stringify(homeJson, null, 2);
+        const writeHomeJson = `cat > /root/.claude.json << 'SPYRE_HOMECJ_EOF'\n${homeStr}\nSPYRE_HOMECJ_EOF`;
+        await sshExec(client, writeHomeJson, 10000);
+        await sshExec(client, 'chmod 600 /root/.claude.json', 5000);
+      }
+
+      // Verify auth status
+      const verifyResult = await sshExec(client, 'claude auth status 2>&1', 15000);
+      const loggedIn = verifyResult.code === 0;
+
+      results.push({ envId: env.id, name: env.name, success: true, loggedIn });
     } catch (err) {
       results.push({
         envId: env.id,
@@ -104,6 +141,66 @@ export const POST: RequestHandler = async ({ request }) => {
     results
   });
 };
+
+function buildClaudeJson(credentialsPath: string): Record<string, unknown> | null {
+  const claudeJsonPath = credentialsPath.replace(/\.credentials\.json$/, '.claude.json');
+
+  if (!existsSync(claudeJsonPath)) {
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(claudeJsonPath, 'utf-8');
+    const full = JSON.parse(raw) as Record<string, unknown>;
+
+    // Copy everything, strip controller-specific fields
+    const config = { ...full };
+    delete config.projects;
+    delete config.githubRepoPaths;
+
+    config.hasCompletedOnboarding = true;
+    if (!config.theme) config.theme = 'dark';
+    if (!config.numStartups || (config.numStartups as number) < 1) {
+      config.numStartups = 1;
+    }
+
+    return config;
+  } catch {
+    return null;
+  }
+}
+
+function buildHomeClaudeJson(): Record<string, unknown> | null {
+  const home = process.env.HOME ?? '/root';
+  const homePath = `${home}/.claude.json`;
+
+  let config: Record<string, unknown>;
+
+  if (!existsSync(homePath)) {
+    config = {
+      installMethod: 'native',
+      autoUpdates: false,
+      firstStartTime: new Date().toISOString(),
+      opusProMigrationComplete: true,
+      sonnet1m45MigrationComplete: true,
+      autoUpdatesProtectedForNative: true
+    };
+  } else {
+    try {
+      const raw = readFileSync(homePath, 'utf-8');
+      config = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  // Ensure onboarding bypass fields are always set — Claude Code launches
+  // the interactive wizard if either is missing, blocking headless execution
+  config.hasCompletedOnboarding = true;
+  if (!config.theme) config.theme = 'dark';
+
+  return config;
+}
 
 function sshExec(
   client: import('ssh2').Client,

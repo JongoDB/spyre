@@ -71,6 +71,36 @@
 		}
 	}
 
+	/** Extract full text from a text event's data */
+	function extractTextContent(event: ClaudeTaskEvent): string {
+		const data = event.data;
+		if (data.type === 'assistant' && Array.isArray(data.content)) {
+			const textBlocks = (data.content as Array<Record<string, unknown>>).filter(
+				(b) => b.type === 'text'
+			);
+			const text = textBlocks.map((b) => String(b.text ?? '')).join('');
+			if (text) return text;
+		}
+		return event.summary;
+	}
+
+	/** Extract tool info from a tool_use event */
+	function extractToolInfo(event: ClaudeTaskEvent): { name: string; detail: string } {
+		const colonIdx = event.summary.indexOf(':');
+		if (colonIdx > 0) {
+			return {
+				name: event.summary.slice(0, colonIdx),
+				detail: event.summary.slice(colonIdx + 2)
+			};
+		}
+		return { name: 'Tool', detail: event.summary };
+	}
+
+	/** Filter events for display — skip init, tool_result, result */
+	function filterEvents(events: ClaudeTaskEvent[]): ClaudeTaskEvent[] {
+		return events.filter((e) => e.type === 'text' || e.type === 'tool_use' || e.type === 'error');
+	}
+
 	async function resumeTask(taskId: string) {
 		resuming = taskId;
 		try {
@@ -169,15 +199,30 @@
 								<div class="events-loading">Loading events...</div>
 							</div>
 						{:else if taskEvents.get(task.id)?.length}
+							{@const filtered = filterEvents(taskEvents.get(task.id) ?? [])}
 							<div class="detail-section">
-								<span class="detail-label">Activity ({taskEvents.get(task.id)?.length} events)</span>
+								<span class="detail-label">Activity ({filtered.length} events)</span>
 								<div class="events-list">
-									{#each taskEvents.get(task.id) ?? [] as event (event.seq)}
-										<div class="event-row event-type-{event.type}">
-											<span class="event-icon">{eventIcon(event.type)}</span>
-											<span class="event-summary">{event.summary}</span>
-											<span class="event-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
-										</div>
+									{#each filtered as event (event.seq)}
+										{#if event.type === 'text'}
+											<div class="event-text-block">
+												<pre class="event-text-content">{extractTextContent(event)}</pre>
+											</div>
+										{:else if event.type === 'tool_use'}
+											{@const tool = extractToolInfo(event)}
+											<div class="event-row event-type-tool_use">
+												<span class="event-icon">{eventIcon(event.type)}</span>
+												<span class="tool-name">{tool.name}</span>
+												<span class="tool-detail">{tool.detail}</span>
+												<span class="event-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
+											</div>
+										{:else}
+											<div class="event-row event-type-{event.type}">
+												<span class="event-icon">{eventIcon(event.type)}</span>
+												<span class="event-summary">{event.summary}</span>
+												<span class="event-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
+											</div>
+										{/if}
 									{/each}
 								</div>
 							</div>
@@ -444,6 +489,44 @@
 		font-size: 0.625rem;
 		color: var(--text-secondary);
 		font-family: 'SF Mono', 'Fira Code', monospace;
+	}
+
+	.event-text-block {
+		padding: 8px 12px;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+	}
+
+	.event-text-block:last-child {
+		border-bottom: none;
+	}
+
+	.event-text-content {
+		font-size: 0.75rem;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--text-primary);
+		white-space: pre-wrap;
+		word-break: break-word;
+		margin: 0;
+		line-height: 1.5;
+	}
+
+	.tool-name {
+		flex-shrink: 0;
+		font-weight: 600;
+		font-size: 0.6875rem;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--accent, #6366f1);
+	}
+
+	.tool-detail {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		font-size: 0.6875rem;
+		color: var(--text-secondary);
 	}
 
 	.empty-state {
