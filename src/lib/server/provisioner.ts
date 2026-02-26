@@ -575,8 +575,8 @@ export async function installClaudeInEnvironment(
         );
       }
 
-      // Try the official installer first
-      const installResult = await exec('curl -fsSL https://claude.ai/install.sh | sh 2>&1', 180000);
+      // Try the official installer first (with retry for rate limiting)
+      const installResult = await exec('for i in 1 2 3; do curl -fsSL https://claude.ai/install.sh | sh 2>&1 && break; echo "Install attempt $i failed, retrying in 5s..." >&2; sleep 5; done', 300000);
       console.log(`[spyre] Claude install script exit code: ${installResult.code}`);
       if (installResult.stdout) {
         console.log(`[spyre] Claude install output:\n${installResult.stdout.slice(-2000)}`);
@@ -604,18 +604,32 @@ export async function installClaudeInEnvironment(
       } else {
         // Official installer didn't produce a usable binary.
         // Fallback: download the binary directly and place it in /usr/local/bin.
+        // Uses retry with exponential backoff to handle 429 rate limiting.
         console.log('[spyre] Official installer did not produce a binary — downloading directly...');
         const directInstall = await exec(
           'set -e; ' +
           'GCS="https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"; ' +
           'case "$(uname -m)" in x86_64|amd64) arch="x64" ;; arm64|aarch64) arch="arm64" ;; *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;; esac; ' +
           'if ldd /bin/ls 2>&1 | grep -q musl; then platform="linux-${arch}-musl"; else platform="linux-${arch}"; fi; ' +
-          'version=$(curl -fsSL "$GCS/latest"); ' +
-          'curl -fsSL -o /tmp/claude-dl "$GCS/$version/$platform/claude"; ' +
+          // Retry wrapper: up to 4 attempts with exponential backoff (5s, 10s, 20s)
+          'download_with_retry() { ' +
+          '  local url="$1" out="$2" attempt=0 max=4 wait=5; ' +
+          '  while [ $attempt -lt $max ]; do ' +
+          '    if curl -fsSL -o "$out" "$url" 2>&1; then return 0; fi; ' +
+          '    attempt=$((attempt + 1)); ' +
+          '    if [ $attempt -lt $max ]; then ' +
+          '      echo "Download failed (attempt $attempt/$max), retrying in ${wait}s..." >&2; ' +
+          '      sleep $wait; wait=$((wait * 2)); ' +
+          '    fi; ' +
+          '  done; ' +
+          '  return 1; ' +
+          '}; ' +
+          'version=$(download_with_retry "$GCS/latest" /dev/stdout); ' +
+          'download_with_retry "$GCS/$version/$platform/claude" /tmp/claude-dl; ' +
           'chmod +x /tmp/claude-dl; ' +
           'mv /tmp/claude-dl /usr/local/bin/claude; ' +
           'echo "direct-install: /usr/local/bin/claude $version $platform"',
-          120000
+          180000
         );
         console.log(`[spyre] Direct install: ${directInstall.stdout.trim()}`);
         if (directInstall.code !== 0) {
