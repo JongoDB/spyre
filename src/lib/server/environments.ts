@@ -1009,6 +1009,13 @@ async function createViaProxmoxApi(
 
   const ipAddress = await proxmox.discoverLxcIp(node, vmid);
 
+  // Write IP to DB immediately so subsequent steps (Docker install, SSH) can resolve it
+  if (ipAddress) {
+    db.prepare(`
+      UPDATE environments SET ip_address = ?, updated_at = datetime('now') WHERE id = ?
+    `).run(ipAddress, id);
+  }
+
   logProvisioningStep(id, 'post_provision', 'success', ipAddress ? `IP: ${ipAddress}` : 'No IP discovered (DHCP pending).');
   broadcastProvisioningEvent(id, {
     phase: 'post_provision',
