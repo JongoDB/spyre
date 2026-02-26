@@ -373,6 +373,9 @@ function applyMigrations(db: Database.Database): void {
   if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'project_name')) {
     db.exec('ALTER TABLE environments ADD COLUMN project_name TEXT');
   }
+  if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'persona_ids')) {
+    db.exec('ALTER TABLE environments ADD COLUMN persona_ids TEXT');
+  }
 
   // devcontainer_id on claude_tasks
   const taskColsDc = db.pragma('table_info(claude_tasks)') as Array<{ name: string }>;

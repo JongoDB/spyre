@@ -38,17 +38,26 @@
 	let nesting = $state(true);
 	let showAdvanced = $state(false);
 	let installClaude = $state(true);
-	let selectedPersonaId = $state('');
+	let selectedPersonaIds = $state<Set<string>>(new Set());
 	let dockerEnabled = $state(false);
 	let repoUrl = $state('');
 	let gitBranch = $state('main');
 	let projectName = $state('');
 
-	// Auto-enable nesting when Docker mode is on; clear persona (assigned per-devcontainer)
+	function togglePersona(id: string) {
+		const next = new Set(selectedPersonaIds);
+		if (next.has(id)) {
+			next.delete(id);
+		} else {
+			next.add(id);
+		}
+		selectedPersonaIds = next;
+	}
+
+	// Auto-enable nesting when Docker mode is on
 	$effect(() => {
 		if (dockerEnabled) {
 			nesting = true;
-			selectedPersonaId = '';
 		}
 	});
 
@@ -145,7 +154,7 @@
 					software_pool_ids: resolved.software_pools?.map((p: { id: string }) => p.id) ?? [],
 					custom_script: resolved.custom_script || undefined,
 					install_claude: installClaude,
-					persona_id: selectedPersonaId || undefined,
+					persona_ids: selectedPersonaIds.size > 0 ? [...selectedPersonaIds] : undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
 					git_branch: gitBranch || undefined,
@@ -192,7 +201,7 @@
 					unprivileged,
 					nesting,
 					install_claude: installClaude,
-					persona_id: selectedPersonaId || undefined,
+					persona_ids: selectedPersonaIds.size > 0 ? [...selectedPersonaIds] : undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
 					git_branch: gitBranch || undefined,
@@ -244,7 +253,7 @@
 					nesting: true,
 					ssh_enabled: true,
 					install_claude: installClaude,
-					persona_id: selectedPersonaId || undefined,
+					persona_ids: selectedPersonaIds.size > 0 ? [...selectedPersonaIds] : undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
 					git_branch: gitBranch || undefined,
@@ -282,7 +291,7 @@
 				body: JSON.stringify({
 					name: name.trim(),
 					install_claude: installClaude,
-					persona_id: selectedPersonaId || undefined,
+					persona_ids: selectedPersonaIds.size > 0 ? [...selectedPersonaIds] : undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
 					git_branch: gitBranch || undefined,
@@ -485,38 +494,44 @@
 			<label class="checkbox-label docker-checkbox">
 				<input type="checkbox" bind:checked={dockerEnabled} />
 				<span>Docker Multi-Agent Mode</span>
-				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration.</span>
 			</label>
 
-			{#if dockerEnabled}
+			{#if dockerEnabled || data.personas.length > 0}
 				<div class="docker-fields">
-					<div class="form-group">
-						<label for="repo-url-tpl" class="form-label">Repository URL</label>
-						<input id="repo-url-tpl" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
-						<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
-					</div>
-					<div class="form-group">
-						<label for="git-branch-tpl" class="form-label">Git Branch</label>
-						<input id="git-branch-tpl" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
-					</div>
-					<div class="form-group">
-						<label for="project-name-tpl" class="form-label">Project Name</label>
-						<input id="project-name-tpl" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
-						<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
-					</div>
-				</div>
-			{/if}
-
-			{#if !dockerEnabled && data.personas.length > 0}
-				<div class="form-group persona-selector">
-					<label for="persona-template">Persona</label>
-					<select id="persona-template" bind:value={selectedPersonaId}>
-						<option value="">None (generic agent)</option>
-						{#each data.personas as p}
-							<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
-						{/each}
-					</select>
-					<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+					{#if dockerEnabled}
+						<div class="form-group">
+							<label for="repo-url-tpl" class="form-label">Repository URL</label>
+							<input id="repo-url-tpl" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+							<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+						</div>
+						<div class="form-group">
+							<label for="git-branch-tpl" class="form-label">Git Branch</label>
+							<input id="git-branch-tpl" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+						</div>
+						<div class="form-group">
+							<label for="project-name-tpl" class="form-label">Project Name</label>
+							<input id="project-name-tpl" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+							<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+						</div>
+					{/if}
+					{#if data.personas.length > 0}
+						<div class="form-group persona-selector">
+							<span class="form-label">Personas</span>
+							<div class="persona-chips">
+								{#each data.personas as p (p.id)}
+									<button type="button" class="persona-chip" class:selected={selectedPersonaIds.has(p.id)} onclick={() => togglePersona(p.id)}>
+										<span class="persona-avatar">{p.avatar}</span>
+										<span class="persona-info">
+											<span class="persona-name">{p.name}</span>
+											<span class="persona-role">{p.role}</span>
+										</span>
+									</button>
+								{/each}
+							</div>
+							<span class="form-hint">Select one or more agent personas to shape Claude's behavior.</span>
+						</div>
+					{/if}
 				</div>
 			{/if}
 
@@ -651,38 +666,44 @@
 			<label class="checkbox-label docker-checkbox">
 				<input type="checkbox" bind:checked={dockerEnabled} />
 				<span>Docker Multi-Agent Mode</span>
-				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration.</span>
 			</label>
 
-			{#if dockerEnabled}
+			{#if dockerEnabled || data.personas.length > 0}
 				<div class="docker-fields">
-					<div class="form-group">
-						<label for="repo-url-quick" class="form-label">Repository URL</label>
-						<input id="repo-url-quick" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
-						<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
-					</div>
-					<div class="form-group">
-						<label for="git-branch-quick" class="form-label">Git Branch</label>
-						<input id="git-branch-quick" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
-					</div>
-					<div class="form-group">
-						<label for="project-name-quick" class="form-label">Project Name</label>
-						<input id="project-name-quick" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
-						<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
-					</div>
-				</div>
-			{/if}
-
-			{#if !dockerEnabled && data.personas.length > 0}
-				<div class="form-group persona-selector">
-					<label for="persona-quick">Persona</label>
-					<select id="persona-quick" bind:value={selectedPersonaId}>
-						<option value="">None (generic agent)</option>
-						{#each data.personas as p}
-							<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
-						{/each}
-					</select>
-					<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+					{#if dockerEnabled}
+						<div class="form-group">
+							<label for="repo-url-quick" class="form-label">Repository URL</label>
+							<input id="repo-url-quick" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+							<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+						</div>
+						<div class="form-group">
+							<label for="git-branch-quick" class="form-label">Git Branch</label>
+							<input id="git-branch-quick" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+						</div>
+						<div class="form-group">
+							<label for="project-name-quick" class="form-label">Project Name</label>
+							<input id="project-name-quick" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+							<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+						</div>
+					{/if}
+					{#if data.personas.length > 0}
+						<div class="form-group persona-selector">
+							<span class="form-label">Personas</span>
+							<div class="persona-chips">
+								{#each data.personas as p (p.id)}
+									<button type="button" class="persona-chip" class:selected={selectedPersonaIds.has(p.id)} onclick={() => togglePersona(p.id)}>
+										<span class="persona-avatar">{p.avatar}</span>
+										<span class="persona-info">
+											<span class="persona-name">{p.name}</span>
+											<span class="persona-role">{p.role}</span>
+										</span>
+									</button>
+								{/each}
+							</div>
+							<span class="form-hint">Select one or more agent personas to shape Claude's behavior.</span>
+						</div>
+					{/if}
 				</div>
 			{/if}
 
@@ -816,38 +837,44 @@
 					<label class="checkbox-label docker-checkbox">
 						<input type="checkbox" bind:checked={dockerEnabled} />
 						<span>Docker Multi-Agent Mode</span>
-						<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+						<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration.</span>
 					</label>
 
-					{#if dockerEnabled}
+					{#if dockerEnabled || data.personas.length > 0}
 						<div class="docker-fields">
-							<div class="form-group">
-								<label for="repo-url-comm" class="form-label">Repository URL</label>
-								<input id="repo-url-comm" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
-								<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
-							</div>
-							<div class="form-group">
-								<label for="git-branch-comm" class="form-label">Git Branch</label>
-								<input id="git-branch-comm" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
-							</div>
-							<div class="form-group">
-								<label for="project-name-comm" class="form-label">Project Name</label>
-								<input id="project-name-comm" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
-								<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
-							</div>
-						</div>
-					{/if}
-
-					{#if !dockerEnabled && data.personas.length > 0}
-						<div class="form-group persona-selector">
-							<label for="persona-community">Persona</label>
-							<select id="persona-community" bind:value={selectedPersonaId}>
-								<option value="">None (generic agent)</option>
-								{#each data.personas as p}
-									<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
-								{/each}
-							</select>
-							<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+							{#if dockerEnabled}
+								<div class="form-group">
+									<label for="repo-url-comm" class="form-label">Repository URL</label>
+									<input id="repo-url-comm" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+									<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+								</div>
+								<div class="form-group">
+									<label for="git-branch-comm" class="form-label">Git Branch</label>
+									<input id="git-branch-comm" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+								</div>
+								<div class="form-group">
+									<label for="project-name-comm" class="form-label">Project Name</label>
+									<input id="project-name-comm" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+									<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+								</div>
+							{/if}
+							{#if data.personas.length > 0}
+								<div class="form-group persona-selector">
+									<span class="form-label">Personas</span>
+									<div class="persona-chips">
+										{#each data.personas as p (p.id)}
+											<button type="button" class="persona-chip" class:selected={selectedPersonaIds.has(p.id)} onclick={() => togglePersona(p.id)}>
+												<span class="persona-avatar">{p.avatar}</span>
+												<span class="persona-info">
+													<span class="persona-name">{p.name}</span>
+													<span class="persona-role">{p.role}</span>
+												</span>
+											</button>
+										{/each}
+									</div>
+									<span class="form-hint">Select one or more agent personas to shape Claude's behavior.</span>
+								</div>
+							{/if}
 						</div>
 					{/if}
 
@@ -969,38 +996,44 @@
 			<label class="checkbox-label docker-checkbox">
 				<input type="checkbox" bind:checked={dockerEnabled} />
 				<span>Docker Multi-Agent Mode</span>
-				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration. Personas are assigned per-agent after creation.</span>
+				<span class="form-hint">Enable Docker devcontainers for multi-agent collaboration.</span>
 			</label>
 
-			{#if dockerEnabled}
+			{#if dockerEnabled || data.personas.length > 0}
 				<div class="docker-fields">
-					<div class="form-group">
-						<label for="repo-url-cfg" class="form-label">Repository URL</label>
-						<input id="repo-url-cfg" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
-						<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
-					</div>
-					<div class="form-group">
-						<label for="git-branch-cfg" class="form-label">Git Branch</label>
-						<input id="git-branch-cfg" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
-					</div>
-					<div class="form-group">
-						<label for="project-name-cfg" class="form-label">Project Name</label>
-						<input id="project-name-cfg" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
-						<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
-					</div>
-				</div>
-			{/if}
-
-			{#if !dockerEnabled && data.personas.length > 0}
-				<div class="form-group persona-selector">
-					<label for="persona-config">Persona</label>
-					<select id="persona-config" bind:value={selectedPersonaId}>
-						<option value="">None (generic agent)</option>
-						{#each data.personas as p}
-							<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
-						{/each}
-					</select>
-					<span class="form-hint">Assign an agent persona to shape Claude's behavior via CLAUDE.md and prompt framing.</span>
+					{#if dockerEnabled}
+						<div class="form-group">
+							<label for="repo-url-cfg" class="form-label">Repository URL</label>
+							<input id="repo-url-cfg" type="text" class="form-input" placeholder="https://github.com/org/repo.git" bind:value={repoUrl} />
+							<span class="form-hint">Git repo to clone into the project directory. Leave blank for an empty git repo.</span>
+						</div>
+						<div class="form-group">
+							<label for="git-branch-cfg" class="form-label">Git Branch</label>
+							<input id="git-branch-cfg" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+						</div>
+						<div class="form-group">
+							<label for="project-name-cfg" class="form-label">Project Name</label>
+							<input id="project-name-cfg" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+							<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+						</div>
+					{/if}
+					{#if data.personas.length > 0}
+						<div class="form-group persona-selector">
+							<span class="form-label">Personas</span>
+							<div class="persona-chips">
+								{#each data.personas as p (p.id)}
+									<button type="button" class="persona-chip" class:selected={selectedPersonaIds.has(p.id)} onclick={() => togglePersona(p.id)}>
+										<span class="persona-avatar">{p.avatar}</span>
+										<span class="persona-info">
+											<span class="persona-name">{p.name}</span>
+											<span class="persona-role">{p.role}</span>
+										</span>
+									</button>
+								{/each}
+							</div>
+							<span class="form-hint">Select one or more agent personas to shape Claude's behavior.</span>
+						</div>
+					{/if}
 				</div>
 			{/if}
 
@@ -1484,7 +1517,75 @@
 	}
 
 	.persona-selector { margin-top: 8px; }
-	.persona-selector select { width: 100%; }
+
+	.persona-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.persona-chip {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 8px 14px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: rgba(255, 255, 255, 0.02);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: all var(--transition);
+		text-align: left;
+		min-width: 0;
+	}
+
+	.persona-chip:hover {
+		border-color: var(--accent);
+		color: var(--text-primary);
+		background: rgba(99, 102, 241, 0.04);
+	}
+
+	.persona-chip.selected {
+		border-color: var(--accent);
+		background: rgba(99, 102, 241, 0.12);
+		color: var(--text-primary);
+		box-shadow: 0 0 0 1px var(--accent);
+	}
+
+	.persona-avatar {
+		font-size: 1.25rem;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+
+	.persona-info {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+
+	.persona-name {
+		font-size: 0.8125rem;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.persona-role {
+		font-size: 0.6875rem;
+		color: var(--text-secondary);
+		opacity: 0.8;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.persona-chip.selected .persona-role {
+		color: var(--accent);
+		opacity: 1;
+	}
 
 	/* ---- Docker multi-agent ---- */
 

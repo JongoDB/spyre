@@ -14,7 +14,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		throw error(400, 'Config name is required.');
 	}
 
-	let body: { name: string; install_claude?: boolean; persona_id?: string };
+	let body: { name: string; install_claude?: boolean; persona_id?: string; persona_ids?: string[]; docker_enabled?: boolean; repo_url?: string; git_branch?: string; project_name?: string };
 	try {
 		body = await request.json();
 	} catch {
@@ -34,9 +34,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		if (body.install_claude !== undefined) {
 			req.install_claude = body.install_claude;
 		}
-		if (body.persona_id) {
+		if (body.persona_ids?.length) {
+			req.persona_ids = body.persona_ids;
+			req.persona_id = body.persona_ids[0];
+		} else if (body.persona_id) {
 			req.persona_id = body.persona_id;
 		}
+		if (body.docker_enabled !== undefined) req.docker_enabled = body.docker_enabled;
+		if (body.repo_url) req.repo_url = body.repo_url;
+		if (body.git_branch) req.git_branch = body.git_branch;
+		if (body.project_name) req.project_name = body.project_name;
 
 		// Create the environment
 		const environment = await createEnvironment(req);

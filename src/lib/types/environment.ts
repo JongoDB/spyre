@@ -15,6 +15,7 @@ export interface Environment {
   last_accessed: string | null;
   metadata: string | null;
   persona_id: string | null;
+  persona_ids: string | null;  // JSON array of persona IDs
   docker_enabled: boolean;
   repo_url: string | null;
   git_branch: string;
@@ -60,6 +61,7 @@ export interface CreateEnvironmentRequest {
   install_claude?: boolean;
   config_name?: string;
   persona_id?: string;
+  persona_ids?: string[];
   docker_enabled?: boolean;
   repo_url?: string;
   git_branch?: string;
