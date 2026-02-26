@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ClaudeTask, ClaudeTaskEvent } from '$lib/types/claude';
+	import type { ClaudeTask } from '$lib/types/claude';
 	import { addToast } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -12,34 +12,8 @@
 	let expandedTask = $state<string | null>(null);
 	let resuming = $state<string | null>(null);
 	let retrying = $state<string | null>(null);
-	let taskEvents = $state<Map<string, ClaudeTaskEvent[]>>(new Map());
-	let loadingEvents = $state<string | null>(null);
-
 	function toggleExpand(taskId: string) {
-		if (expandedTask === taskId) {
-			expandedTask = null;
-		} else {
-			expandedTask = taskId;
-			fetchEvents(taskId);
-		}
-	}
-
-	async function fetchEvents(taskId: string) {
-		if (taskEvents.has(taskId)) return;
-		loadingEvents = taskId;
-		try {
-			const res = await fetch(`/api/claude/tasks/${taskId}/events`);
-			if (res.ok) {
-				const body = await res.json();
-				const newMap = new Map(taskEvents);
-				newMap.set(taskId, body.events ?? []);
-				taskEvents = newMap;
-			}
-		} catch {
-			// Non-critical — events just won't show
-		} finally {
-			loadingEvents = null;
-		}
+		expandedTask = expandedTask === taskId ? null : taskId;
 	}
 
 	function formatDuration(start: string | null, end: string | null): string {
@@ -57,49 +31,6 @@
 	function formatCost(cost: number | null): string {
 		if (cost === null || cost === undefined) return '-';
 		return `$${cost.toFixed(4)}`;
-	}
-
-	function eventIcon(type: string): string {
-		switch (type) {
-			case 'init': return '▶';
-			case 'tool_use': return '🔧';
-			case 'tool_result': return '📋';
-			case 'text': return '💬';
-			case 'result': return '🏁';
-			case 'error': return '⚠';
-			default: return '•';
-		}
-	}
-
-	/** Extract full text from a text event's data */
-	function extractTextContent(event: ClaudeTaskEvent): string {
-		const data = event.data;
-		// Claude stream-json wraps content in message envelope
-		const msg = data.message as Record<string, unknown> | undefined;
-		const content = (data.content ?? msg?.content) as Array<Record<string, unknown>> | undefined;
-		if (data.type === 'assistant' && Array.isArray(content)) {
-			const textBlocks = content.filter((b) => b.type === 'text');
-			const text = textBlocks.map((b) => String(b.text ?? '')).join('');
-			if (text) return text;
-		}
-		return event.summary;
-	}
-
-	/** Extract tool info from a tool_use event */
-	function extractToolInfo(event: ClaudeTaskEvent): { name: string; detail: string } {
-		const colonIdx = event.summary.indexOf(':');
-		if (colonIdx > 0) {
-			return {
-				name: event.summary.slice(0, colonIdx),
-				detail: event.summary.slice(colonIdx + 2)
-			};
-		}
-		return { name: 'Tool', detail: event.summary };
-	}
-
-	/** Filter events for display — skip init, tool_result, result */
-	function filterEvents(events: ClaudeTaskEvent[]): ClaudeTaskEvent[] {
-		return events.filter((e) => e.type === 'text' || e.type === 'tool_use' || e.type === 'error');
 	}
 
 	async function resumeTask(taskId: string) {
@@ -190,42 +121,6 @@
 							<div class="detail-section">
 								<span class="detail-label">Result</span>
 								<pre class="detail-content">{task.result.slice(0, 2000)}</pre>
-							</div>
-						{/if}
-
-						<!-- Structured events -->
-						{#if loadingEvents === task.id}
-							<div class="detail-section">
-								<span class="detail-label">Activity</span>
-								<div class="events-loading">Loading events...</div>
-							</div>
-						{:else if taskEvents.get(task.id)?.length}
-							{@const filtered = filterEvents(taskEvents.get(task.id) ?? [])}
-							<div class="detail-section">
-								<span class="detail-label">Activity ({filtered.length} events)</span>
-								<div class="events-list">
-									{#each filtered as event (event.seq)}
-										{#if event.type === 'text'}
-											<div class="event-text-block">
-												<pre class="event-text-content">{extractTextContent(event)}</pre>
-											</div>
-										{:else if event.type === 'tool_use'}
-											{@const tool = extractToolInfo(event)}
-											<div class="event-row event-type-tool_use">
-												<span class="event-icon">{eventIcon(event.type)}</span>
-												<span class="tool-name">{tool.name}</span>
-												<span class="tool-detail">{tool.detail}</span>
-												<span class="event-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
-											</div>
-										{:else}
-											<div class="event-row event-type-{event.type}">
-												<span class="event-icon">{eventIcon(event.type)}</span>
-												<span class="event-summary">{event.summary}</span>
-												<span class="event-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
-											</div>
-										{/if}
-									{/each}
-								</div>
 							</div>
 						{/if}
 
@@ -426,108 +321,6 @@
 	.detail-actions {
 		display: flex;
 		gap: 8px;
-	}
-
-	.events-loading {
-		font-size: 0.8125rem;
-		color: var(--text-secondary);
-		padding: 8px 0;
-	}
-
-	.events-list {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		max-height: 300px;
-		overflow-y: auto;
-		background-color: var(--bg-primary);
-	}
-
-	.event-row {
-		display: flex;
-		align-items: flex-start;
-		gap: 8px;
-		padding: 5px 12px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-		font-size: 0.75rem;
-	}
-
-	.event-row:last-child {
-		border-bottom: none;
-	}
-
-	.event-row.event-type-tool_use {
-		background-color: rgba(59, 130, 246, 0.04);
-	}
-
-	.event-row.event-type-error {
-		background-color: rgba(239, 68, 68, 0.04);
-	}
-
-	.event-row.event-type-result {
-		background-color: rgba(34, 197, 94, 0.04);
-	}
-
-	.event-icon {
-		flex-shrink: 0;
-		width: 18px;
-		text-align: center;
-		font-size: 0.6875rem;
-		line-height: 1.5;
-	}
-
-	.event-summary {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		color: var(--text-primary);
-	}
-
-	.event-time {
-		flex-shrink: 0;
-		font-size: 0.625rem;
-		color: var(--text-secondary);
-		font-family: 'SF Mono', 'Fira Code', monospace;
-	}
-
-	.event-text-block {
-		padding: 8px 12px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-	}
-
-	.event-text-block:last-child {
-		border-bottom: none;
-	}
-
-	.event-text-content {
-		font-size: 0.75rem;
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		color: var(--text-primary);
-		white-space: pre-wrap;
-		word-break: break-word;
-		margin: 0;
-		line-height: 1.5;
-	}
-
-	.tool-name {
-		flex-shrink: 0;
-		font-weight: 600;
-		font-size: 0.6875rem;
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		color: var(--accent, #6366f1);
-	}
-
-	.tool-detail {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		font-size: 0.6875rem;
-		color: var(--text-secondary);
 	}
 
 	.empty-state {

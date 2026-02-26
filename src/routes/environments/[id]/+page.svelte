@@ -718,10 +718,12 @@
 							</h3>
 							<button class="btn btn-sm btn-secondary" onclick={() => { activeAgentTaskId = null; activeAgentDcId = null; }}>Dismiss</button>
 						</div>
-						<AgentTaskActivity
-							taskId={activeAgentTaskId}
-							onComplete={() => { refreshClaudeData(); }}
-						/>
+						{#key activeAgentTaskId}
+							<AgentTaskActivity
+								taskId={activeAgentTaskId}
+								onComplete={() => { refreshClaudeData(); }}
+							/>
+						{/key}
 					</div>
 				{/if}
 
