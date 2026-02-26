@@ -900,12 +900,13 @@ async function createViaProxmoxApi(
 
   // Unprivileged and nesting defaults
   // Docker-in-LXC requires nesting=1 and keyctl=1
+  // Note: keyctl=1 can only be set by root@pam (not API tokens), so we set it
+  // post-creation via SSH. The API call only gets nesting=1.
   const unprivileged = req.unprivileged !== false;
   const nesting = req.docker_enabled ? true : (req.nesting !== false);
+  const needsKeyctl = req.docker_enabled;
   let features: string | undefined;
-  if (nesting && req.docker_enabled) {
-    features = 'nesting=1,keyctl=1';
-  } else if (nesting) {
+  if (nesting) {
     features = 'nesting=1';
   }
 
@@ -937,6 +938,8 @@ async function createViaProxmoxApi(
     });
 
     // Create LXC via Proxmox API
+    // If docker is enabled, create stopped — we need to add keyctl feature via SSH
+    // before starting (keyctl can't be set via API token, only root@pam directly)
     const upid = await proxmox.createLxc(node, {
       vmid: allocatedVmid,
       hostname: req.name,
@@ -945,7 +948,7 @@ async function createViaProxmoxApi(
       memory: req.memory,
       rootfs: `${storage}:${req.disk}`,
       net0,
-      start: true,
+      start: !needsKeyctl,
       sshPublicKeys: sshPubKey,
       password: rootPassword,
       swap,
@@ -962,6 +965,29 @@ async function createViaProxmoxApi(
 
     // Wait for Proxmox task to complete (still inside lock — VMID is now committed)
     await proxmox.waitForTask(node, upid);
+
+    // If docker mode, add keyctl=1 feature via SSH (API tokens can't set this —
+    // Proxmox restricts feature flags except nesting to root@pam only)
+    // then start the container
+    if (needsKeyctl) {
+      try {
+        const sedCmd = `sed -i 's/^features: nesting=1$/features: nesting=1,keyctl=1/' /etc/pve/lxc/${allocatedVmid}.conf`;
+        const result = await sshToProxmox(sedCmd, 10000);
+        if (result.code !== 0) {
+          console.warn(`[spyre] Failed to set keyctl: ${result.stderr}`);
+        }
+        logProvisioningStep(id, 'proxmox', 'running', 'Added Docker keyctl feature flag, starting container...');
+        broadcastProvisioningEvent(id, { phase: 'proxmox', step: 'Added Docker keyctl feature, starting...', status: 'running' });
+      } catch (keyctlErr) {
+        console.warn('[spyre] Failed to add keyctl feature via SSH:', keyctlErr);
+        logProvisioningStep(id, 'proxmox', 'running', 'Warning: Could not add keyctl feature — Docker may not work correctly.');
+        broadcastProvisioningEvent(id, { phase: 'proxmox', step: 'Warning: keyctl not set — Docker may have issues', status: 'running' });
+      }
+
+      // Start the container
+      const startUpid = await proxmox.startLxc(node, allocatedVmid);
+      await proxmox.waitForTask(node, startUpid);
+    }
 
     return allocatedVmid;
   });

@@ -3,9 +3,14 @@
 	import type { PipelineTemplate } from '$lib/types/pipeline';
 	import { addToast } from '$lib/stores/toast.svelte';
 
+	interface PipelineListItem extends Pipeline {
+		step_count: number;
+		completed_count: number;
+	}
+
 	interface Props {
 		envId: string;
-		pipelines: Pipeline[];
+		pipelines: PipelineListItem[];
 		onSelect: (pipelineId: string) => void;
 		onCreateNew: () => void;
 		onRefresh: () => void;
@@ -125,7 +130,13 @@
 						{/if}
 					</div>
 					<div class="pipeline-meta">
-						<span class="status-badge" style="color: {statusColor(p.status)}">{p.status}</span>
+						{#if p.step_count > 0}
+							<span class="step-progress">{p.completed_count}/{p.step_count}</span>
+						{/if}
+						<span class="status-badge" style="color: {statusColor(p.status)}">
+							{#if p.status === 'running'}<span class="running-dot"></span>{/if}
+							{p.status}
+						</span>
 						{#if p.total_cost_usd > 0}
 							<span class="cost">${p.total_cost_usd.toFixed(4)}</span>
 						{/if}
@@ -179,7 +190,17 @@
 	.pipeline-name { font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.pipeline-desc { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.pipeline-meta { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-	.status-badge { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+	.step-progress {
+		font-size: 0.6875rem; font-family: 'SF Mono', monospace;
+		color: var(--text-secondary); padding: 1px 6px;
+		background: var(--bg-tertiary); border-radius: 8px;
+	}
+	.status-badge { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; display: flex; align-items: center; gap: 4px; }
+	.running-dot {
+		width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+		animation: dot-pulse 1.5s ease-in-out infinite;
+	}
+	@keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 	.cost { font-size: 0.75rem; color: var(--text-secondary); font-family: 'SF Mono', monospace; }
 	.date { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; }
 </style>

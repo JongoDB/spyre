@@ -18,6 +18,8 @@
 	import { addToast } from '$lib/stores/toast.svelte';
 	import type { Pipeline } from '$lib/types/pipeline';
 
+	type PipelineListItem = Pipeline & { step_count: number; completed_count: number };
+
 	interface ResourceMetrics {
 		cpuPercent: number;
 		memUsed: number;
@@ -99,7 +101,7 @@
 	let dcDispatching = $state(false);
 
 	// Pipeline state
-	let pipelines = $state<Pipeline[]>(data.pipelines ?? []);
+	let pipelines = $state<PipelineListItem[]>(data.pipelines ?? []);
 	let pipelineView = $state<'list' | 'builder' | 'runner'>('list');
 	let selectedPipelineId = $state<string | null>(null);
 
@@ -333,6 +335,50 @@
 			}
 		} catch {
 			addToast(`Network error while trying to ${action} environment.`, 'error');
+		} finally {
+			actionLoading = false;
+		}
+	}
+
+	async function retryProvisioning() {
+		actionLoading = true;
+		try {
+			const res = await fetch(`/api/environments/${env.id}/start`, { method: 'POST' });
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to retry provisioning.', 'error');
+				return;
+			}
+			addToast('Retrying provisioning...', 'success');
+			const envRes = await fetch(`/api/environments/${env.id}`);
+			if (envRes.ok) {
+				const updated = await envRes.json();
+				env = updated;
+				if (updated.metadata) {
+					try { metadata = JSON.parse(updated.metadata); } catch { /* ignore */ }
+				}
+			}
+		} catch {
+			addToast('Network error while retrying.', 'error');
+		} finally {
+			actionLoading = false;
+		}
+	}
+
+	async function destroyAndGoBack() {
+		if (!confirm('Destroy this environment? This cannot be undone.')) return;
+		actionLoading = true;
+		try {
+			const res = await fetch(`/api/environments/${env.id}`, { method: 'DELETE' });
+			if (res.ok) {
+				addToast('Environment destroyed.', 'success');
+				window.location.href = '/environments';
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to destroy environment.', 'error');
+			}
+		} catch {
+			addToast('Network error while destroying.', 'error');
 		} finally {
 			actionLoading = false;
 		}
@@ -725,6 +771,7 @@
 						pipelineId={selectedPipelineId}
 						onBack={() => { pipelineView = 'list'; selectedPipelineId = null; refreshPipelines(); }}
 						onRefresh={refreshPipelines}
+						onClone={(id) => { selectedPipelineId = id; refreshPipelines(); }}
 					/>
 				</div>
 			{/if}
@@ -760,10 +807,34 @@
 	{:else if env.status === 'error'}
 		<div class="terminal-placeholder card error">
 			<div class="placeholder-content">
-				<p>Environment encountered an error.</p>
+				<div class="error-header-icon">
+					<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--error)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+				</div>
+				<p class="error-title">Provisioning Failed</p>
 				{#if env.error_message}
-					<pre class="error-detail">{env.error_message}</pre>
+					<div class="error-detail-box">
+						{#if env.error_message.includes('lacks privileges') || env.error_message.includes('FORBIDDEN')}
+							<div class="error-category">Proxmox Permission Error</div>
+						{:else if env.error_message.includes('AUTH_FAILED') || env.error_message.includes('authentication')}
+							<div class="error-category">Proxmox Authentication Error</div>
+						{:else if env.error_message.includes('ECONNREFUSED') || env.error_message.includes('Cannot reach')}
+							<div class="error-category">Proxmox Connection Error</div>
+						{:else if env.error_message.includes('timed out') || env.error_message.includes('TIMEOUT')}
+							<div class="error-category">Timeout Error</div>
+						{:else if env.error_message.includes('template') || env.error_message.includes('no such file')}
+							<div class="error-category">Template Error</div>
+						{/if}
+						<pre class="error-detail">{env.error_message}</pre>
+					</div>
 				{/if}
+				<div class="error-actions">
+					<button class="btn btn-sm btn-primary" onclick={() => retryProvisioning()} disabled={actionLoading}>
+						{actionLoading ? 'Retrying...' : 'Retry Provisioning'}
+					</button>
+					<button class="btn btn-sm btn-danger" onclick={() => destroyAndGoBack()} disabled={actionLoading}>
+						Destroy Environment
+					</button>
+				</div>
 			</div>
 		</div>
 		{#if provisioningProgress && provisioningProgress.phases.length > 0}
@@ -1106,19 +1177,37 @@
 		opacity: 0.7;
 	}
 
+	.error-header-icon { margin-bottom: 8px; }
+	.error-title { font-size: 1rem; font-weight: 600; color: var(--error); margin: 0 0 12px; }
+
+	.error-detail-box {
+		max-width: 700px; text-align: left; width: 100%;
+	}
+	.error-category {
+		font-size: 0.6875rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.04em; color: var(--error); margin-bottom: 6px;
+		padding: 2px 8px; background: rgba(239,68,68,0.1); border-radius: 3px;
+		display: inline-block;
+	}
 	.error-detail {
-		max-width: 600px;
+		max-width: 700px;
 		font-size: 0.75rem;
 		font-family: 'SF Mono', monospace;
-		background-color: rgba(239, 68, 68, 0.08);
-		color: var(--error);
+		background-color: rgba(239, 68, 68, 0.06);
+		border: 1px solid rgba(239, 68, 68, 0.15);
+		color: var(--text-primary);
 		padding: 12px 16px;
 		border-radius: var(--radius-sm);
 		white-space: pre-wrap;
 		word-break: break-word;
 		text-align: left;
-		max-height: 200px;
+		max-height: 250px;
 		overflow-y: auto;
+		line-height: 1.6;
+		margin: 0;
+	}
+	.error-actions {
+		display: flex; gap: 8px; margin-top: 16px;
 	}
 
 	.spinner {

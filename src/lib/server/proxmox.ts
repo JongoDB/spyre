@@ -53,20 +53,52 @@ async function proxmoxFetch<T>(
     response = await fetch(url, { ...options, headers });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const config = getEnvConfig();
     if (message.includes('ECONNREFUSED')) {
-      throw createError('CONNECTION_REFUSED', `Cannot reach Proxmox at ${getEnvConfig().proxmox.host}:${getEnvConfig().proxmox.port}. Is the host accessible?`);
+      throw createError('CONNECTION_REFUSED',
+        `Cannot reach Proxmox at ${config.proxmox.host}:${config.proxmox.port} (connection refused). ` +
+        'Verify the Proxmox host IP and port in environment.yaml, and ensure the Proxmox web interface is running.'
+      );
     }
     if (message.includes('ETIMEDOUT') || message.includes('timeout')) {
-      throw createError('TIMEOUT', 'Connection to Proxmox timed out.');
+      throw createError('TIMEOUT',
+        `Connection to Proxmox at ${config.proxmox.host}:${config.proxmox.port} timed out. ` +
+        'Check network connectivity between the controller and the Proxmox host.'
+      );
     }
-    throw createError('NETWORK_ERROR', `Network error connecting to Proxmox: ${message}`);
+    throw createError('NETWORK_ERROR',
+      `Network error connecting to Proxmox at ${config.proxmox.host}:${config.proxmox.port}: ${message}`
+    );
   }
 
   if (response.status === 401) {
-    throw createError('AUTH_FAILED', 'Proxmox API token is invalid or expired. Check environment.yaml and SPYRE_PVE_TOKEN_SECRET.');
+    const config = getEnvConfig();
+    throw createError('AUTH_FAILED',
+      `Proxmox authentication failed for token "${config.proxmox.token_id}" on ${config.proxmox.host}. ` +
+      'Verify the token exists in Proxmox (Datacenter → Permissions → API Tokens) and that SPYRE_PVE_TOKEN_SECRET in .env matches the token secret.'
+    );
   }
   if (response.status === 403) {
-    throw createError('FORBIDDEN', 'Proxmox API token lacks required privileges.');
+    const body = await response.text().catch(() => '');
+    const config = getEnvConfig();
+    let detail = '';
+    try {
+      const parsed = JSON.parse(body);
+      // Proxmox returns "permission check failed" or specific privilege info
+      if (parsed.errors) {
+        detail = ` (${Object.values(parsed.errors).join('; ')})`;
+      } else if (typeof parsed.data === 'string') {
+        detail = ` (${parsed.data})`;
+      }
+    } catch {
+      if (body && body.length < 300) detail = ` (${body.trim()})`;
+    }
+    throw createError('FORBIDDEN',
+      `Proxmox API token "${config.proxmox.token_id}" lacks privileges for ${path}${detail}. ` +
+      'Fix: On the Proxmox host, run: pveum user token remove root@pam <token-name> && ' +
+      'pveum user token add root@pam <token-name> --privsep 0 — then update the secret in .env. ' +
+      'The --privsep 0 flag lets the token inherit full root privileges.'
+    );
   }
   if (response.status === 500) {
     const body = await response.text().catch(() => '');
@@ -82,11 +114,17 @@ async function proxmoxFetch<T>(
     } catch {
       if (body) detail = body.slice(0, 500);
     }
-    throw createError('PROXMOX_ERROR', `Proxmox error: ${detail}`);
+    throw createError('PROXMOX_ERROR', `Proxmox internal error on ${path}: ${detail}`);
   }
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw createError('API_ERROR', `Proxmox API error (${response.status}): ${body}`);
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed.errors) detail = Object.values(parsed.errors).join('; ');
+      else if (parsed.message) detail = parsed.message;
+    } catch { /* use raw body */ }
+    throw createError('API_ERROR', `Proxmox API error (HTTP ${response.status}) on ${path}: ${detail}`);
   }
 
   const json = await response.json() as ProxmoxApiResponse<T>;
@@ -344,13 +382,26 @@ export async function waitForTask(
     const status = await getTaskStatus(node, upid);
     if (status.status === 'stopped') {
       if (status.exitstatus && status.exitstatus !== 'OK') {
-        throw createError('TASK_FAILED', `Proxmox task failed: ${status.exitstatus}`);
+        // Parse common Proxmox task failure reasons
+        const exit = status.exitstatus;
+        let hint = '';
+        if (exit.includes('storage') || exit.includes('disk')) {
+          hint = ' Check that the storage pool exists and has enough free space.';
+        } else if (exit.includes('lock')) {
+          hint = ' The resource may be locked by another operation. Try again in a moment.';
+        } else if (exit.includes('template') || exit.includes('no such file')) {
+          hint = ' The OS template may not be downloaded. Check Proxmox storage for available templates.';
+        }
+        throw createError('TASK_FAILED', `Proxmox task failed: ${exit}.${hint}`);
       }
       return status;
     }
     await new Promise(r => setTimeout(r, pollIntervalMs));
   }
-  throw createError('TASK_TIMEOUT', `Proxmox task did not complete within ${timeoutMs / 1000}s.`);
+  throw createError('TASK_TIMEOUT',
+    `Proxmox task did not complete within ${timeoutMs / 1000}s. ` +
+    'The operation may still be running on the Proxmox host — check the Proxmox web UI task log.'
+  );
 }
 
 // --- Network Interfaces (for getting container IP) ---

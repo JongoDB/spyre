@@ -77,11 +77,16 @@ export function getPipelineWithSteps(id: string): PipelineWithSteps | null {
   return { ...pipeline, steps };
 }
 
-export function listPipelines(envId: string): Pipeline[] {
+export function listPipelines(envId: string): Array<Pipeline & { step_count: number; completed_count: number }> {
   const db = getDb();
-  return db.prepare(
-    'SELECT * FROM pipelines WHERE env_id = ? ORDER BY created_at DESC'
-  ).all(envId) as Pipeline[];
+  return db.prepare(`
+    SELECT p.*,
+      (SELECT COUNT(*) FROM pipeline_steps WHERE pipeline_id = p.id) as step_count,
+      (SELECT COUNT(*) FROM pipeline_steps WHERE pipeline_id = p.id AND status IN ('completed','skipped')) as completed_count
+    FROM pipelines p
+    WHERE p.env_id = ?
+    ORDER BY p.created_at DESC
+  `).all(envId) as Array<Pipeline & { step_count: number; completed_count: number }>;
 }
 
 export function createPipeline(req: CreatePipelineRequest): Pipeline {

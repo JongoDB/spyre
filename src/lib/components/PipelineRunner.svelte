@@ -2,23 +2,33 @@
 	import { onMount, onDestroy } from 'svelte';
 	import type { PipelineWithSteps, PipelineStepWithContext } from '$lib/types/pipeline';
 	import PipelineGateReview from './PipelineGateReview.svelte';
+	import PipelineStepActivity from './PipelineStepActivity.svelte';
 	import { addToast } from '$lib/stores/toast.svelte';
 
 	interface Props {
 		pipelineId: string;
 		onBack: () => void;
 		onRefresh: () => void;
+		onClone?: (pipelineId: string) => void;
 	}
 
-	let { pipelineId, onBack, onRefresh }: Props = $props();
+	let { pipelineId, onBack, onRefresh, onClone }: Props = $props();
 
 	let pipeline = $state<PipelineWithSteps | null>(null);
 	let loading = $state(true);
 	let cancelling = $state(false);
-	let expandedStep = $state<string | null>(null);
+	let expandedSteps = $state<Set<string>>(new Set());
 	let savingTemplate = $state(false);
 	let templateName = $state('');
 	let showSaveTemplate = $state(false);
+
+	// Pipeline-level elapsed timer
+	let pipelineElapsed = $state(0);
+	let pipelineTimerInterval: ReturnType<typeof setInterval> | null = null;
+
+	// Event log for pipeline-level observability
+	let eventLog = $state<Array<{ time: string; message: string; type: string }>>([]);
+	let showEventLog = $state(false);
 
 	let eventSource: EventSource | null = null;
 
@@ -34,6 +44,37 @@
 		return groups;
 	});
 
+	// Progress stats
+	const progressStats = $derived(() => {
+		if (!pipeline?.steps) return { completed: 0, total: 0, running: 0, waiting: 0, failed: 0 };
+		const steps = pipeline.steps;
+		return {
+			completed: steps.filter(s => s.status === 'completed' || s.status === 'skipped').length,
+			total: steps.length,
+			running: steps.filter(s => s.status === 'running').length,
+			waiting: steps.filter(s => s.status === 'waiting').length,
+			failed: steps.filter(s => s.status === 'error').length
+		};
+	});
+
+	const progressPercent = $derived(() => {
+		const stats = progressStats();
+		if (stats.total === 0) return 0;
+		return Math.round((stats.completed / stats.total) * 100);
+	});
+
+	// Auto-expand running and waiting steps
+	$effect(() => {
+		if (pipeline?.steps) {
+			const activeIds = pipeline.steps
+				.filter(s => s.status === 'running' || s.status === 'waiting')
+				.map(s => s.id);
+			if (activeIds.length > 0) {
+				expandedSteps = new Set([...expandedSteps, ...activeIds]);
+			}
+		}
+	});
+
 	async function loadPipeline() {
 		try {
 			const res = await fetch(`/api/pipelines/${pipelineId}`);
@@ -44,7 +85,33 @@
 
 	function connectSSE() {
 		eventSource = new EventSource(`/api/pipelines/${pipelineId}/stream`);
-		eventSource.onmessage = () => {
+		eventSource.onmessage = (msgEvent) => {
+			// Parse event data and add to log
+			try {
+				const data = JSON.parse(msgEvent.data);
+				const event = data.event ?? 'update';
+				let message = event;
+				const type = event;
+
+				// Build human-readable messages
+				switch (event) {
+					case 'started': message = 'Pipeline started'; break;
+					case 'completed': message = 'Pipeline completed'; break;
+					case 'failed': message = `Pipeline failed${data.error ? ': ' + data.error : ''}`; break;
+					case 'cancelled': message = 'Pipeline cancelled'; break;
+					case 'paused': message = 'Pipeline paused — waiting for review'; break;
+					case 'step_started': message = `Step "${data.label}" started`; break;
+					case 'step_completed': message = `Step "${data.label}" completed${data.cost ? ' ($' + Number(data.cost).toFixed(4) + ')' : ''}`; break;
+					case 'step_error': message = `Step "${data.label}" failed${data.error ? ': ' + data.error : ''}`; break;
+					case 'step_skipped': message = `Step "${data.label}" skipped`; break;
+					case 'step_retried': message = `Step "${data.label}" retrying`; break;
+					case 'gate_waiting': message = `Gate "${data.label}" waiting for review`; break;
+					case 'gate_decided': message = `Gate decided: ${data.action}${data.feedback ? ' — "' + data.feedback + '"' : ''}`; break;
+				}
+
+				eventLog = [...eventLog, { time: new Date().toLocaleTimeString(), message, type }];
+			} catch { /* ignore parse errors */ }
+
 			// Reload pipeline data on any event
 			loadPipeline();
 		};
@@ -52,6 +119,36 @@
 			// Will auto-reconnect
 		};
 	}
+
+	function startPipelineTimer() {
+		if (pipelineTimerInterval) return;
+		pipelineTimerInterval = setInterval(() => {
+			if (pipeline?.started_at) {
+				pipelineElapsed = Math.floor((Date.now() - new Date(pipeline.started_at).getTime()) / 1000);
+			}
+		}, 1000);
+	}
+
+	function stopPipelineTimer() {
+		if (pipelineTimerInterval) {
+			clearInterval(pipelineTimerInterval);
+			pipelineTimerInterval = null;
+		}
+	}
+
+	// Start/stop pipeline timer based on status
+	$effect(() => {
+		if (pipeline?.status === 'running' || pipeline?.status === 'paused') {
+			startPipelineTimer();
+		} else {
+			stopPipelineTimer();
+			if (pipeline?.started_at && pipeline?.completed_at) {
+				pipelineElapsed = Math.floor(
+					(new Date(pipeline.completed_at).getTime() - new Date(pipeline.started_at).getTime()) / 1000
+				);
+			}
+		}
+	});
 
 	onMount(() => {
 		loadPipeline();
@@ -61,7 +158,15 @@
 	onDestroy(() => {
 		eventSource?.close();
 		eventSource = null;
+		stopPipelineTimer();
 	});
+
+	function toggleStep(stepId: string) {
+		const next = new Set(expandedSteps);
+		if (next.has(stepId)) next.delete(stepId);
+		else next.add(stepId);
+		expandedSteps = next;
+	}
 
 	async function startPipeline() {
 		try {
@@ -102,6 +207,36 @@
 			} else {
 				const body = await res.json().catch(() => ({}));
 				addToast(body.message ?? 'Failed to delete', 'error');
+			}
+		} catch { addToast('Network error', 'error'); }
+	}
+
+	async function clonePipeline() {
+		if (!pipeline) return;
+		try {
+			const res = await fetch('/api/pipelines', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					env_id: pipeline.env_id,
+					name: `${pipeline.name} (copy)`,
+					description: pipeline.description,
+					steps: pipeline.steps.map(s => ({
+						position: s.position, type: s.type, label: s.label,
+						devcontainer_id: s.devcontainer_id, persona_id: s.persona_id,
+						prompt_template: s.prompt_template, gate_instructions: s.gate_instructions,
+						max_retries: s.max_retries
+					}))
+				})
+			});
+			if (res.ok) {
+				const newPipeline = await res.json();
+				addToast('Pipeline cloned', 'success');
+				onRefresh();
+				if (onClone) onClone(newPipeline.id);
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to clone', 'error');
 			}
 		} catch { addToast('Network error', 'error'); }
 	}
@@ -147,18 +282,6 @@
 		finally { savingTemplate = false; }
 	}
 
-	function statusIcon(status: string): string {
-		switch (status) {
-			case 'completed': return 'check';
-			case 'running': return 'spinner';
-			case 'error': return 'x';
-			case 'waiting': return 'pause';
-			case 'skipped': return 'skip';
-			case 'cancelled': return 'slash';
-			default: return 'circle';
-		}
-	}
-
 	function statusColor(status: string): string {
 		switch (status) {
 			case 'completed': return 'var(--success)';
@@ -168,6 +291,14 @@
 			case 'skipped': case 'cancelled': return 'var(--text-secondary)';
 			default: return 'var(--border)';
 		}
+	}
+
+	function formatElapsed(secs: number): string {
+		if (secs < 60) return `${secs}s`;
+		const min = Math.floor(secs / 60);
+		if (min < 60) return `${min}m ${secs % 60}s`;
+		const hr = Math.floor(min / 60);
+		return `${hr}h ${min % 60}m`;
 	}
 
 	function formatDuration(start: string | null, end: string | null): string {
@@ -180,6 +311,14 @@
 		const min = Math.floor(sec / 60);
 		return `${min}m ${sec % 60}s`;
 	}
+
+	function eventTypeColor(type: string): string {
+		if (type.includes('error') || type.includes('failed')) return 'var(--error)';
+		if (type.includes('completed') || type === 'completed') return 'var(--success)';
+		if (type.includes('started') || type === 'started') return 'var(--accent)';
+		if (type.includes('gate') || type.includes('paused')) return 'var(--warning)';
+		return 'var(--text-secondary)';
+	}
 </script>
 
 {#if loading}
@@ -191,20 +330,25 @@
 		<!-- Header -->
 		<div class="runner-header">
 			<div class="header-left">
-				<button class="back-btn" onclick={onBack}>
+				<button class="back-btn" onclick={onBack} title="Back to list">
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
 				</button>
 				<div class="header-info">
-					<h3>{pipeline.name}</h3>
+					<div class="header-title-row">
+						<h3>{pipeline.name}</h3>
+						<span class="pipeline-status" style="color: {statusColor(pipeline.status)}">{pipeline.status}</span>
+					</div>
 					{#if pipeline.description}
 						<span class="header-desc">{pipeline.description}</span>
 					{/if}
 				</div>
-				<span class="pipeline-status" style="color: {statusColor(pipeline.status)}">{pipeline.status}</span>
 			</div>
 			<div class="header-actions">
+				{#if pipelineElapsed > 0}
+					<span class="stat-badge elapsed-badge">{formatElapsed(pipelineElapsed)}</span>
+				{/if}
 				{#if pipeline.total_cost_usd > 0}
-					<span class="cost-badge">${pipeline.total_cost_usd.toFixed(4)}</span>
+					<span class="stat-badge cost-badge">${pipeline.total_cost_usd.toFixed(4)}</span>
 				{/if}
 				{#if pipeline.status === 'draft' || pipeline.status === 'failed'}
 					<button class="btn btn-sm btn-primary" onclick={startPipeline}>
@@ -216,6 +360,7 @@
 						{cancelling ? 'Cancelling...' : 'Cancel'}
 					</button>
 				{/if}
+				<button class="btn btn-sm btn-secondary" onclick={clonePipeline} title="Clone as new draft">Clone</button>
 				{#if pipeline.status === 'draft' || pipeline.status === 'completed' || pipeline.status === 'failed' || pipeline.status === 'cancelled'}
 					<button class="btn btn-sm btn-secondary" onclick={deletePipeline}>Delete</button>
 				{/if}
@@ -224,6 +369,27 @@
 				</button>
 			</div>
 		</div>
+
+		<!-- Progress bar -->
+		{#if pipeline.status !== 'draft'}
+			<div class="progress-section">
+				<div class="progress-bar-track">
+					<div class="progress-bar-fill" style="width: {progressPercent()}%"></div>
+				</div>
+				<div class="progress-stats">
+					<span class="progress-label">{progressStats().completed}/{progressStats().total} steps</span>
+					{#if progressStats().running > 0}
+						<span class="progress-tag running">{progressStats().running} running</span>
+					{/if}
+					{#if progressStats().waiting > 0}
+						<span class="progress-tag waiting">{progressStats().waiting} awaiting review</span>
+					{/if}
+					{#if progressStats().failed > 0}
+						<span class="progress-tag failed">{progressStats().failed} failed</span>
+					{/if}
+				</div>
+			</div>
+		{/if}
 
 		{#if pipeline.error_message}
 			<div class="error-bar">{pipeline.error_message}</div>
@@ -250,8 +416,8 @@
 					</div>
 					<div class="timeline-steps">
 						{#each group.steps as step (step.id)}
-							<div class="step-card" class:expanded={expandedStep === step.id}>
-								<button class="step-header" onclick={() => expandedStep = expandedStep === step.id ? null : step.id}>
+							<div class="step-card" class:expanded={expandedSteps.has(step.id)} class:step-running={step.status === 'running'} class:step-waiting={step.status === 'waiting'}>
+								<button class="step-header" onclick={() => toggleStep(step.id)}>
 									<div class="step-status-indicator" style="background: {statusColor(step.status)}">
 										{#if step.status === 'running'}
 											<div class="pulse"></div>
@@ -284,7 +450,12 @@
 									<svg class="expand-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
 								</button>
 
-								{#if expandedStep === step.id}
+								<!-- Live activity feed for running agent steps -->
+								{#if step.status === 'running' && step.task_id && step.type === 'agent'}
+									<PipelineStepActivity taskId={step.task_id} compact />
+								{/if}
+
+								{#if expandedSteps.has(step.id)}
 									<div class="step-detail">
 										{#if step.prompt_template}
 											<div class="detail-section">
@@ -323,7 +494,7 @@
 									</div>
 								{/if}
 
-								<!-- Gate review (inline) -->
+								<!-- Gate review (inline, always visible for waiting gates) -->
 								{#if step.type === 'gate' && step.status === 'waiting'}
 									<PipelineGateReview
 										{pipelineId}
@@ -338,6 +509,28 @@
 				</div>
 			{/each}
 		</div>
+
+		<!-- Event log -->
+		{#if eventLog.length > 0}
+			<div class="event-log-section">
+				<button class="event-log-toggle" onclick={() => showEventLog = !showEventLog}>
+					<span class="event-log-title">Event Log</span>
+					<span class="event-log-count">{eventLog.length}</span>
+					<svg class="event-log-chevron" class:open={showEventLog} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+				</button>
+				{#if showEventLog}
+					<div class="event-log-entries">
+						{#each eventLog as entry, i (i)}
+							<div class="event-log-entry">
+								<span class="event-log-time">{entry.time}</span>
+								<span class="event-log-dot" style="background: {eventTypeColor(entry.type)}"></span>
+								<span class="event-log-msg">{entry.message}</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {/if}
 
@@ -353,11 +546,35 @@
 	}
 	.back-btn:hover { color: var(--text-primary); }
 	.header-info { display: flex; flex-direction: column; gap: 2px; }
+	.header-title-row { display: flex; align-items: center; gap: 10px; }
 	.header-info h3 { font-size: 0.9375rem; font-weight: 600; margin: 0; }
 	.header-desc { font-size: 0.75rem; color: var(--text-secondary); }
 	.pipeline-status { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
 	.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-	.cost-badge { font-size: 0.75rem; color: var(--text-secondary); font-family: 'SF Mono', monospace; padding: 2px 8px; background: var(--bg-tertiary); border-radius: var(--radius-sm); }
+	.stat-badge {
+		font-size: 0.75rem; color: var(--text-secondary);
+		font-family: 'SF Mono', monospace; padding: 2px 8px;
+		background: var(--bg-tertiary); border-radius: var(--radius-sm);
+	}
+
+	/* Progress bar */
+	.progress-section { display: flex; flex-direction: column; gap: 6px; }
+	.progress-bar-track {
+		height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;
+	}
+	.progress-bar-fill {
+		height: 100%; background: var(--accent); border-radius: 2px;
+		transition: width 0.4s ease;
+	}
+	.progress-stats { display: flex; align-items: center; gap: 10px; }
+	.progress-label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
+	.progress-tag {
+		font-size: 0.6875rem; padding: 1px 8px; border-radius: 10px;
+		font-weight: 500;
+	}
+	.progress-tag.running { background: rgba(99,102,241,0.1); color: var(--accent); }
+	.progress-tag.waiting { background: rgba(245,158,11,0.1); color: var(--warning); }
+	.progress-tag.failed { background: rgba(239,68,68,0.1); color: var(--error); }
 
 	.error-bar {
 		padding: 10px 16px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
@@ -374,7 +591,6 @@
 	/* Timeline */
 	.timeline { display: flex; flex-direction: column; gap: 0; }
 	.timeline-group { display: flex; gap: 16px; padding: 8px 0; }
-	.timeline-group.parallel { }
 	.timeline-position { display: flex; flex-direction: column; align-items: center; width: 32px; flex-shrink: 0; position: relative; }
 	.position-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--border); z-index: 0; }
 	.position-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border); background: var(--bg-primary); z-index: 1; margin-top: 14px; }
@@ -384,6 +600,14 @@
 	.step-card {
 		background: var(--bg-secondary); border: 1px solid var(--border);
 		border-radius: var(--radius-sm); overflow: hidden;
+	}
+	.step-card.step-running {
+		border-color: rgba(99,102,241,0.3);
+		box-shadow: 0 0 0 1px rgba(99,102,241,0.1);
+	}
+	.step-card.step-waiting {
+		border-color: rgba(245,158,11,0.3);
+		box-shadow: 0 0 0 1px rgba(245,158,11,0.1);
 	}
 	.step-header {
 		display: flex; align-items: center; gap: 10px; padding: 10px 14px;
@@ -412,7 +636,7 @@
 	.step-type-badge.gate { background: rgba(245,158,11,0.1); color: var(--warning); }
 	.step-label { font-size: 0.8125rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.step-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; }
-	.step-meta > * { font-size: 0.6875rem; color: var(--text-secondary); }
+	.step-meta > :global(*) { font-size: 0.6875rem; color: var(--text-secondary); }
 	.step-persona { font-weight: 500; }
 	.step-dc { font-family: 'SF Mono', monospace; font-size: 0.625rem; }
 	.step-cost { font-family: 'SF Mono', monospace; }
@@ -431,4 +655,38 @@
 		margin: 0;
 	}
 	.step-actions { display: flex; gap: 8px; }
+
+	/* Event log */
+	.event-log-section {
+		border: 1px solid var(--border); border-radius: var(--radius-sm);
+		overflow: hidden;
+	}
+	.event-log-toggle {
+		display: flex; align-items: center; gap: 8px; width: 100%;
+		padding: 8px 14px; background: var(--bg-secondary);
+		border: none; cursor: pointer; color: var(--text-primary);
+		transition: background-color var(--transition);
+	}
+	.event-log-toggle:hover { background: rgba(255,255,255,0.03); }
+	.event-log-title { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+	.event-log-count {
+		font-size: 0.625rem; font-weight: 700; background: var(--bg-tertiary);
+		padding: 1px 6px; border-radius: 8px; color: var(--text-secondary);
+	}
+	.event-log-chevron { margin-left: auto; color: var(--text-secondary); transition: transform var(--transition); }
+	.event-log-chevron.open { transform: rotate(180deg); }
+
+	.event-log-entries {
+		max-height: 200px; overflow-y: auto;
+		border-top: 1px solid var(--border);
+	}
+	.event-log-entry {
+		display: flex; align-items: center; gap: 8px;
+		padding: 4px 14px; font-size: 0.6875rem;
+		border-bottom: 1px solid rgba(255,255,255,0.02);
+	}
+	.event-log-entry:last-child { border-bottom: none; }
+	.event-log-time { font-family: 'SF Mono', monospace; color: var(--text-secondary); flex-shrink: 0; width: 70px; }
+	.event-log-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+	.event-log-msg { color: var(--text-primary); }
 </style>
