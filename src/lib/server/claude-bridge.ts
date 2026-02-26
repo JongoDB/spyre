@@ -465,11 +465,20 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
     throw { code: 'RATE_LIMITED', message: `Maximum ${MAX_CONCURRENT_TASKS} concurrent tasks reached` };
   }
 
-  // Check no active task for this env (or devcontainer)
-  const existing = getActiveTaskForEnv(envId);
-  if (existing && (existing.status === 'running' || existing.status === 'pending')) {
-    // For devcontainer dispatch, allow if the existing task is for a different devcontainer
-    if (!devcontainerId || existing.devcontainer_id === devcontainerId) {
+  // Check no active task for this target (per-devcontainer or per-environment)
+  if (devcontainerId) {
+    // Devcontainer dispatch: only block if THIS devcontainer already has an active task
+    const db = getDb();
+    const dcTask = db.prepare(
+      "SELECT id FROM claude_tasks WHERE env_id = ? AND devcontainer_id = ? AND status IN ('pending', 'running') LIMIT 1"
+    ).get(envId, devcontainerId) as { id: string } | undefined;
+    if (dcTask) {
+      throw { code: 'ALREADY_RUNNING', message: 'An active task is already running in this devcontainer' };
+    }
+  } else {
+    // Bare env dispatch (no devcontainer): block if env has any non-devcontainer active task
+    const existing = getActiveTaskForEnv(envId);
+    if (existing && (existing.status === 'running' || existing.status === 'pending') && !existing.devcontainer_id) {
       throw { code: 'ALREADY_RUNNING', message: 'An active task is already running in this environment' };
     }
   }
