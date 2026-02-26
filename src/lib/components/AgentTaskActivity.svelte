@@ -35,8 +35,11 @@
 
 	function extractText(event: ClaudeTaskEvent): string {
 		const data = event.data;
-		if (data.type === 'assistant' && Array.isArray(data.content)) {
-			const text = (data.content as Array<Record<string, unknown>>)
+		// Claude stream-json wraps content in message envelope
+		const msg = data.message as Record<string, unknown> | undefined;
+		const content = (data.content ?? msg?.content) as Array<Record<string, unknown>> | undefined;
+		if (data.type === 'assistant' && Array.isArray(content)) {
+			const text = content
 				.filter(b => b.type === 'text')
 				.map(b => String(b.text ?? ''))
 				.join('');

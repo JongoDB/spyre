@@ -24,8 +24,10 @@
 
 	function extractTextContent(event: ClaudeTaskEvent): string {
 		const data = event.data;
-		if (data.type === 'assistant' && Array.isArray(data.content)) {
-			const textBlocks = (data.content as Array<Record<string, unknown>>).filter(b => b.type === 'text');
+		const msg = data.message as Record<string, unknown> | undefined;
+		const content = (data.content ?? msg?.content) as Array<Record<string, unknown>> | undefined;
+		if (data.type === 'assistant' && Array.isArray(content)) {
+			const textBlocks = content.filter(b => b.type === 'text');
 			const text = textBlocks.map(b => String(b.text ?? '')).join('');
 			if (text) return text;
 		}
@@ -34,8 +36,10 @@
 
 	function extractToolInfo(event: ClaudeTaskEvent): { name: string; detail: string } {
 		const data = event.data;
-		if (data.type === 'assistant' && Array.isArray(data.content)) {
-			const toolBlock = (data.content as Array<Record<string, unknown>>).find(b => b.type === 'tool_use');
+		const msg = data.message as Record<string, unknown> | undefined;
+		const content = (data.content ?? msg?.content) as Array<Record<string, unknown>> | undefined;
+		if (data.type === 'assistant' && Array.isArray(content)) {
+			const toolBlock = content.find(b => b.type === 'tool_use');
 			if (toolBlock) {
 				return {
 					name: String(toolBlock.name ?? 'Tool'),

@@ -57,10 +57,11 @@
 	/** Extract full text from a text event's data */
 	function extractTextContent(event: ClaudeTaskEvent): string {
 		const data = event.data;
-		if (data.type === 'assistant' && Array.isArray(data.content)) {
-			const textBlocks = (data.content as Array<Record<string, unknown>>).filter(
-				(b) => b.type === 'text'
-			);
+		// Claude stream-json wraps content in message envelope
+		const msg = data.message as Record<string, unknown> | undefined;
+		const content = (data.content ?? msg?.content) as Array<Record<string, unknown>> | undefined;
+		if (data.type === 'assistant' && Array.isArray(content)) {
+			const textBlocks = content.filter((b) => b.type === 'text');
 			const text = textBlocks.map((b) => String(b.text ?? '')).join('');
 			if (text) return text;
 		}

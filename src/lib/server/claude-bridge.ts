@@ -121,14 +121,18 @@ export function extractTaskEvent(
   }
 
   // type: 'assistant' → check content blocks
+  // Claude stream-json wraps content in a 'message' envelope: { type: 'assistant', message: { content: [...] } }
   if (raw.type === 'assistant') {
-    const content = raw.content as Array<Record<string, unknown>> | undefined;
+    const msg = raw.message as Record<string, unknown> | undefined;
+    const content = (raw.content ?? msg?.content) as Array<Record<string, unknown>> | undefined;
     if (!content || !Array.isArray(content)) {
+      // Fallback: try to extract text from message
+      const fallback = typeof raw.message === 'string' ? raw.message : '';
       return {
         seq,
         type: 'text',
         timestamp,
-        summary: truncate(String(raw.message ?? ''), 200),
+        summary: truncate(fallback, 200),
         data: raw
       };
     }
