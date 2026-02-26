@@ -689,14 +689,17 @@
 						<div class="dc-dispatch-form">
 							<textarea
 								class="form-input"
-								placeholder="Enter task prompt... (Ctrl+Enter to dispatch)"
+								placeholder="Enter task prompt..."
 								bind:value={dcDispatchPrompt}
 								rows="3"
-								onkeydown={(e) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); dispatchToDevcontainer(); } }}
+								onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); dispatchToDevcontainer(); } }}
 							></textarea>
-							<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
-								{dcDispatching ? 'Dispatching...' : 'Dispatch (Ctrl+Enter)'}
-							</button>
+							<div class="dispatch-actions">
+								<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
+									{dcDispatching ? 'Dispatching...' : 'Dispatch'}
+								</button>
+								<span class="keyboard-hint">Ctrl+Enter</span>
+							</div>
 						</div>
 					</div>
 				{/if}
@@ -1397,8 +1400,21 @@
 		min-height: 60px;
 	}
 
-	.dc-dispatch-form .btn {
-		align-self: flex-end;
+	.dispatch-actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 10px;
+	}
+
+	.keyboard-hint {
+		font-size: 0.6875rem;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--text-secondary);
+		background: rgba(255, 255, 255, 0.06);
+		padding: 2px 8px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
 	}
 
 </style>

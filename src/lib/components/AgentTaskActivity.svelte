@@ -71,11 +71,16 @@
 						data: msg.data ?? {}
 					};
 					if (!events.some(e => e.seq === evt.seq)) {
+						// Only auto-scroll if user is near the bottom
+						const nearBottom = eventsEl
+							? (eventsEl.scrollHeight - eventsEl.scrollTop - eventsEl.clientHeight) < 60
+							: true;
 						events = [...events, evt];
-						// Auto-scroll
-						requestAnimationFrame(() => {
-							if (eventsEl) eventsEl.scrollTop = eventsEl.scrollHeight;
-						});
+						if (nearBottom) {
+							requestAnimationFrame(() => {
+								if (eventsEl) eventsEl.scrollTop = eventsEl.scrollHeight;
+							});
+						}
 					}
 					if (evt.type === 'result') {
 						if (evt.data.cost_usd != null) cost = Number(evt.data.cost_usd);
@@ -225,8 +230,9 @@
 	}
 
 	.events-list {
-		max-height: 200px;
-		overflow-y: auto;
+		max-height: 400px;
+		min-height: 60px;
+		overflow-y: scroll;
 		background: var(--bg-primary);
 	}
 
