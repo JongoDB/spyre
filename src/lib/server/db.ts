@@ -253,6 +253,29 @@ function applyMigrations(db: Database.Database): void {
     `);
   }
 
+  // Add 'docker_install' and 'project_setup' phases to provisioning_log CHECK constraint
+  const provLogCheck3 = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='provisioning_log'"
+  ).get() as { sql: string } | undefined;
+  if (provLogCheck3 && !provLogCheck3.sql.includes("'docker_install'")) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS provisioning_log_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        env_id      TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        phase       TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script', 'claude_install', 'docker_install', 'project_setup', 'complete', 'error')),
+        step        TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'skipped')),
+        output      TEXT,
+        started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT
+      );
+      INSERT OR IGNORE INTO provisioning_log_new SELECT * FROM provisioning_log;
+      DROP TABLE provisioning_log;
+      ALTER TABLE provisioning_log_new RENAME TO provisioning_log;
+      CREATE INDEX IF NOT EXISTS idx_provisioning_log_env ON provisioning_log(env_id);
+    `);
+  }
+
   // Personas table + persona_id on environments
   const hasPersonasTable = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name='personas'"

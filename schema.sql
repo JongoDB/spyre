@@ -173,7 +173,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
 CREATE TABLE IF NOT EXISTS provisioning_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
-    phase           TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script', 'claude_install', 'complete', 'error')),
+    phase           TEXT NOT NULL CHECK (phase IN ('proxmox', 'helper_script', 'post_provision', 'community_script', 'software_pool', 'custom_script', 'claude_install', 'docker_install', 'project_setup', 'complete', 'error')),
     step            TEXT NOT NULL,                           -- human-readable step name
     status          TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'skipped')),
     output          TEXT,                                    -- command output (stdout + stderr)
