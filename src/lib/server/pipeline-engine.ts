@@ -21,11 +21,22 @@ import type {
 
 const MAX_ITERATION = 3;
 
-const pipelineEmitter = new EventEmitter();
-pipelineEmitter.setMaxListeners(50);
+// Use globalThis singleton to survive Vite SSR module reloads (same fix as claude-bridge)
+const EMITTER_KEY = '__spyre_pipeline_emitter__';
+const LISTENERS_KEY = '__spyre_pipeline_listeners__';
+const g = globalThis as Record<string, unknown>;
+if (!g[EMITTER_KEY]) {
+  const e = new EventEmitter();
+  e.setMaxListeners(50);
+  g[EMITTER_KEY] = e;
+}
+if (!g[LISTENERS_KEY]) {
+  g[LISTENERS_KEY] = new Map<string, () => void>();
+}
+const pipelineEmitter = g[EMITTER_KEY] as EventEmitter;
 
 // Track active task listeners so we can clean up on cancel/restart
-const activeListeners = new Map<string, () => void>();
+const activeListeners = g[LISTENERS_KEY] as Map<string, () => void>;
 
 // =============================================================================
 // Event Emitter
@@ -250,6 +261,35 @@ async function advancePipeline(pipelineId: string): Promise<void> {
   // Check if any step is still running or waiting
   if (stepsAtCurrent.some(s => s.status === 'running')) return;
   if (stepsAtCurrent.some(s => s.status === 'waiting')) return;
+
+  // Check for pending steps that need dispatching (initial start, post-revise, or retry)
+  const pendingSteps = stepsAtCurrent.filter(s => s.status === 'pending');
+  if (pendingSteps.length > 0) {
+    let dispatchedAgents = false;
+    let hasGate = false;
+
+    for (const step of pendingSteps) {
+      if (step.type === 'agent') {
+        await dispatchAgentStep(pipeline, step);
+        dispatchedAgents = true;
+      } else if (step.type === 'gate') {
+        db.prepare(
+          "UPDATE pipeline_steps SET status = 'waiting', started_at = datetime('now') WHERE id = ?"
+        ).run(step.id);
+        hasGate = true;
+        emitPipelineEvent(pipelineId, 'gate_waiting', { stepId: step.id, label: step.label });
+      }
+    }
+
+    // If only gates at this position (no agents dispatched), pause for human review
+    if (hasGate && !dispatchedAgents) {
+      db.prepare(
+        "UPDATE pipelines SET status = 'paused', updated_at = datetime('now') WHERE id = ?"
+      ).run(pipelineId);
+      emitPipelineEvent(pipelineId, 'paused');
+    }
+    return;
+  }
 
   // Check for errors
   const errorSteps = stepsAtCurrent.filter(s => s.status === 'error');

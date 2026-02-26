@@ -150,6 +150,19 @@
 		}
 	});
 
+	// Polling fallback: refresh every 5s while pipeline is active (SSE may lag or disconnect)
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	$effect(() => {
+		if (pipeline?.status === 'running' || pipeline?.status === 'paused') {
+			if (!pollTimer) {
+				pollTimer = setInterval(() => loadPipeline(), 5000);
+			}
+		} else {
+			if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+		}
+	});
+
 	onMount(() => {
 		loadPipeline();
 		connectSSE();
@@ -159,6 +172,7 @@
 		eventSource?.close();
 		eventSource = null;
 		stopPipelineTimer();
+		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 	});
 
 	function toggleStep(stepId: string) {
