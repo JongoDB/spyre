@@ -620,10 +620,14 @@ export async function handleGateDecision(
   const pipeline = getPipeline(pipelineId);
   if (!pipeline) throw { code: 'NOT_FOUND', message: 'Pipeline not found' };
 
+  // Map action verb to DB enum (approve→approved, reject→rejected, revise→revised)
+  const gateResultMap: Record<string, string> = { approve: 'approved', reject: 'rejected', revise: 'revised' };
+  const gateResult = gateResultMap[decision.action] ?? decision.action;
+
   // Atomically check and update step status
   const result = db.prepare(
     "UPDATE pipeline_steps SET gate_result = ?, gate_feedback = ?, gate_decided_at = datetime('now'), status = 'completed', completed_at = datetime('now') WHERE id = ? AND pipeline_id = ? AND status = 'waiting'"
-  ).run(decision.action, decision.feedback ?? null, stepId, pipelineId);
+  ).run(gateResult, decision.feedback ?? null, stepId, pipelineId);
 
   if (result.changes === 0) {
     throw { code: 'CONFLICT', message: 'Step is not in waiting status (may have already been decided)' };
