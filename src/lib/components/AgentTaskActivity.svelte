@@ -164,7 +164,7 @@
 			{:else if event.type === 'text'}
 				<div class="event-row text">
 					<span class="icon">{eventIcon(event.type)}</span>
-					<span class="text-content">{extractText(event).slice(0, 300)}</span>
+					<span class="text-content">{extractText(event)}</span>
 				</div>
 			{:else}
 				<div class="event-row error">
@@ -181,6 +181,9 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		margin-top: 8px;
+		display: flex;
+		flex-direction: column;
+		max-height: 500px;
 	}
 
 	.activity-header {
@@ -230,9 +233,9 @@
 	}
 
 	.events-list {
-		max-height: 400px;
+		flex: 1;
 		min-height: 60px;
-		overflow-y: scroll;
+		overflow-y: auto;
 		background: var(--bg-primary);
 	}
 
