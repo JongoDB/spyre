@@ -17,8 +17,17 @@ import type { Persona } from '$lib/types/persona';
 
 const MAX_CONCURRENT_TASKS = 5;
 
-const emitter = new EventEmitter();
-emitter.setMaxListeners(50);
+// Use a global singleton so the emitter survives Vite SSR module reloads.
+// Without this, the WS handler (loaded via ssrLoadModule) gets a different
+// emitter than the one task execution emits on, so live events never arrive.
+const globalKey = '__spyre_claude_emitter__';
+const globalObj = globalThis as Record<string, unknown>;
+if (!globalObj[globalKey]) {
+  const e = new EventEmitter();
+  e.setMaxListeners(50);
+  globalObj[globalKey] = e;
+}
+const emitter = globalObj[globalKey] as EventEmitter;
 
 const activeTasks = new Map<string, {
   taskId: string;
@@ -108,6 +117,14 @@ export function extractTaskEvent(
   seq: number
 ): ClaudeTaskEvent | null {
   const timestamp = new Date().toISOString();
+
+  // Skip noise events that shouldn't be stored or displayed
+  if (raw.type === 'rate_limit_event' || raw.type === 'content_block_start' ||
+      raw.type === 'content_block_delta' || raw.type === 'content_block_stop' ||
+      raw.type === 'message_start' || raw.type === 'message_delta' || raw.type === 'message_stop' ||
+      raw.type === 'ping') {
+    return null;
+  }
 
   // type: 'system' → init
   if (raw.type === 'system') {
