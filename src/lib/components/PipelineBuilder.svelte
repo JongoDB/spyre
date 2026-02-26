@@ -25,14 +25,14 @@
 
 	let { envId, devcontainers, personas, onCreated, onCancel }: Props = $props();
 
+	let nextStepId = 1;
+
 	let name = $state('');
 	let description = $state('');
 	let steps = $state<StepDraft[]>([makeStep(1)]);
 	let creating = $state(false);
 	let savingTemplate = $state(false);
 	let showPresets = $state(true);
-
-	let nextStepId = 1;
 
 	// --- Presets ---
 	interface Preset {
