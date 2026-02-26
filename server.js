@@ -208,7 +208,59 @@ async function attachTerminal(ws, options) {
 // =============================================================================
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const server = createServer(handler);
+
+// MCP server handler — lazy-loaded from SvelteKit build via the /api/mcp route chunk
+let handleMcpRequest = null;
+
+async function loadMcpHandler() {
+  if (handleMcpRequest) return handleMcpRequest;
+  try {
+    // Find the MCP route chunk in the build output
+    const { readdirSync } = await import('node:fs');
+    const chunksDir = resolve(process.cwd(), 'build/server/chunks');
+    const files = readdirSync(chunksDir);
+    // The /api/mcp route compiles to a chunk named _server.ts-<hash>.js
+    // We identify it by checking for the _handleMcpRequest export
+    for (const file of files) {
+      if (!file.startsWith('_server.ts-') || !file.endsWith('.js')) continue;
+      try {
+        const mod = await import(`./build/server/chunks/${file}`);
+        if (mod._handleMcpRequest) {
+          handleMcpRequest = mod._handleMcpRequest;
+          console.log(`[spyre] MCP handler loaded from ${file}`);
+          return handleMcpRequest;
+        }
+      } catch { /* not the right chunk */ }
+    }
+  } catch (err) {
+    console.warn('[spyre] Failed to load MCP handler:', err);
+  }
+  return null;
+}
+
+const server = createServer(async (req, res) => {
+  // MCP endpoint — intercept before SvelteKit
+  if (req.url === '/mcp' || req.url?.startsWith('/mcp?')) {
+    try {
+      const mcpHandler = await loadMcpHandler();
+      if (mcpHandler) {
+        await mcpHandler(req, res);
+      } else {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'MCP server module not available' }));
+      }
+    } catch (err) {
+      console.error('[spyre] MCP request error:', err);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'MCP server error' }));
+      }
+    }
+    return;
+  }
+  // Default: SvelteKit handler
+  handler(req, res);
+});
 const wss = new WebSocketServer({ noServer: true });
 
 // =============================================================================

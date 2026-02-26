@@ -677,6 +677,21 @@ CREATE TABLE IF NOT EXISTS pipeline_context_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_pipeline ON pipeline_context_snapshots(pipeline_id);
 
 -- =============================================================================
+-- Agent Messages — Async inter-agent messaging for MCP
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id              TEXT PRIMARY KEY,
+    env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+    from_agent_id   TEXT NOT NULL,
+    to_agent_id     TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    read            INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_env ON agent_messages(env_id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_to ON agent_messages(to_agent_id, read);
+
+-- =============================================================================
 -- Settings — Global key-value configuration store
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS settings (

@@ -11,6 +11,25 @@ export function spyreWebSocket(): Plugin {
     configureServer(viteServer: ViteDevServer) {
       if (!viteServer.httpServer) return;
 
+      // MCP endpoint middleware — intercept /mcp before SvelteKit
+      viteServer.middlewares.use(async (req, res, next) => {
+        const url = req.url ?? '';
+        if (url === '/mcp' || url.startsWith('/mcp?')) {
+          try {
+            const mod = await viteServer.ssrLoadModule('/src/lib/server/mcp-server.ts');
+            await mod.handleMcpRequest(req, res);
+          } catch (err) {
+            console.error('[spyre] MCP dev request error:', err);
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'MCP server error' }));
+            }
+          }
+          return;
+        }
+        next();
+      });
+
       const wss = new WebSocketServer({ noServer: true });
 
       // Cache loaded modules so ssrLoadModule only runs once per module

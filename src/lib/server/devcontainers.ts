@@ -409,6 +409,22 @@ async function writePersonaClaudeMd(
   parts.push('');
   parts.push('Maintain `/workspace/.spyre/progress.json` to report your status.');
   parts.push('Update `current_task` and phase statuses as you work.');
+  parts.push('');
+  parts.push('## Spyre MCP Tools');
+  parts.push('');
+  parts.push('You have access to the following Spyre-specific tools via MCP:');
+  parts.push('');
+  parts.push('- **spyre_get_env_status** — Query this environment\'s state, IP, and resources');
+  parts.push('- **spyre_list_agents** — See all active agents and their current tasks');
+  parts.push('- **spyre_get_pipeline_context** — Read pipeline state, steps, and gate feedback');
+  parts.push('- **spyre_report_progress** — Report your progress (preferred over editing progress.json)');
+  parts.push('- **spyre_get_services** — Query detected web services and ports');
+  parts.push('- **spyre_get_git_activity** — Current branch, recent commits, diff stats');
+  parts.push('- **spyre_get_task_history** — Recent task history for this environment');
+  parts.push('- **spyre_send_message** — Send a message to another agent');
+  parts.push('');
+  parts.push('Use `spyre_report_progress` to keep the team updated on your work.');
+  parts.push('Use `spyre_get_pipeline_context` to understand what prior steps have done.');
 
   const content = parts.join('\n');
   const cmd = `docker exec -u root ${containerName} bash -c 'mkdir -p /home/spyre/.claude && cat > /home/spyre/.claude/CLAUDE.md << PERSONA_EOF\n${content}\nPERSONA_EOF && chown -R spyre:spyre /home/spyre/.claude'`;
@@ -508,6 +524,36 @@ export async function createDevcontainer(input: DevcontainerCreateInput): Promis
       if (persona) {
         const siblings = listDevcontainers(input.env_id).filter(d => d.id !== id);
         await writePersonaClaudeMd(input.env_id, containerName, persona, siblings);
+      }
+
+      // Inject MCP server config (.mcp.json) so Claude Code discovers Spyre tools
+      try {
+        const { generateMcpToken } = await import('./mcp-auth');
+        const { getEnvConfig } = await import('./env-config');
+        const mcpToken = generateMcpToken(input.env_id, id);
+        const controllerIp = getEnvConfig().controller.ip ?? 'localhost';
+        const mcpConfig = JSON.stringify({
+          mcpServers: {
+            spyre: {
+              type: 'http',
+              url: `http://${controllerIp}:3000/mcp`,
+              headers: { Authorization: `Bearer ${mcpToken}` }
+            }
+          }
+        }, null, 2);
+
+        const mcpCmds = [
+          `docker exec -u root ${containerName} mkdir -p /home/spyre/.claude`,
+          `docker exec -u root ${containerName} bash -c 'cat > /home/spyre/.claude/.mcp.json << MCP_EOF\n${mcpConfig}\nMCP_EOF'`,
+          `docker exec -u root ${containerName} chmod 600 /home/spyre/.claude/.mcp.json`,
+          `docker exec -u root ${containerName} chown spyre:spyre /home/spyre/.claude/.mcp.json`,
+        ];
+        for (const cmd of mcpCmds) {
+          await envExec(input.env_id, cmd, 10000);
+        }
+        console.log(`[spyre] MCP config injected into devcontainer ${containerName}`);
+      } catch (err) {
+        console.warn(`[spyre] MCP config injection to devcontainer failed (non-fatal):`, err);
       }
 
       // Update status to running

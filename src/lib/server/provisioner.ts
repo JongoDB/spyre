@@ -436,11 +436,23 @@ visibility into your work.
 - After running tests: update \`metrics.tests_passing\` and \`metrics.tests_failing\`
 `;
 
-/**
- * Build the full CLAUDE.md content for an environment.
- * When a persona is assigned, its instructions come first, followed by the standard
- * progress tracking section. When no persona, just the progress tracking rules.
- */
+const SPYRE_MCP_TOOLS_SECTION = `## Spyre MCP Tools
+
+You have access to the following Spyre-specific tools via MCP:
+
+- **spyre_get_env_status** — Query this environment's state, IP, and resources
+- **spyre_list_agents** — See all active agents and their current tasks
+- **spyre_get_pipeline_context** — Read pipeline state, steps, and gate feedback
+- **spyre_report_progress** — Report your progress (preferred over editing progress.json)
+- **spyre_get_services** — Query detected web services and ports
+- **spyre_get_git_activity** — Current branch, recent commits, diff stats
+- **spyre_get_task_history** — Recent task history for this environment
+- **spyre_send_message** — Send a message to another agent
+
+Use \`spyre_report_progress\` to keep the team updated on your work.
+Use \`spyre_get_pipeline_context\` to understand what prior steps have done.
+`;
+
 /**
  * Build the CLAUDE.md content for an environment or devcontainer.
  * Supports optional project context (repo URL, branch, project dir).
@@ -482,6 +494,8 @@ function buildClaudeMd(
   }
 
   parts.push(SPYRE_PROGRESS_TRACKING);
+  parts.push('');
+  parts.push(SPYRE_MCP_TOOLS_SECTION);
 
   return parts.join('\n');
 }
@@ -676,6 +690,39 @@ export async function installClaudeInEnvironment(
   } catch (err) {
     console.warn('[spyre] Claude auth propagation failed (non-fatal):', err);
   }
+}
+
+/**
+ * Inject MCP server config (.mcp.json) into an environment so Claude Code
+ * discovers Spyre's MCP tools. Called after Claude installation.
+ */
+export async function injectMcpConfig(
+  exec: ProvisionerContext['exec'],
+  envId: string,
+  agentId: string = 'env-agent',
+  workingDir?: string
+): Promise<void> {
+  const { generateMcpToken } = await import('./mcp-auth');
+  const envConfig = getEnvConfig();
+  const controllerIp = envConfig.controller.ip ?? 'localhost';
+  const mcpToken = generateMcpToken(envId, agentId);
+  const mcpConfig = JSON.stringify({
+    mcpServers: {
+      spyre: {
+        type: 'http',
+        url: `http://${controllerIp}:3000/mcp`,
+        headers: { Authorization: `Bearer ${mcpToken}` }
+      }
+    }
+  }, null, 2);
+
+  const baseDir = workingDir ?? '/root';
+  const mcpDir = `${baseDir}/.claude`;
+  await exec(`mkdir -p '${mcpDir}'`, 10000);
+  const writeMcp = `cat > '${mcpDir}/.mcp.json' << 'SPYRE_MCP_EOF'\n${mcpConfig}\nSPYRE_MCP_EOF`;
+  await exec(writeMcp, 10000);
+  await exec(`chmod 600 '${mcpDir}/.mcp.json'`, 5000);
+  console.log(`[spyre] MCP config injected into environment ${envId}`);
 }
 
 /**

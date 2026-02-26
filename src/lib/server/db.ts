@@ -491,6 +491,26 @@ function applyMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE pipelines ADD COLUMN output_artifacts TEXT');
   }
 
+  // Agent messages table (MCP inter-agent messaging)
+  const hasAgentMessages = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_messages'"
+  ).get();
+  if (!hasAgentMessages) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_messages (
+        id              TEXT PRIMARY KEY,
+        env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        from_agent_id   TEXT NOT NULL,
+        to_agent_id     TEXT NOT NULL,
+        message         TEXT NOT NULL,
+        read            INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_messages_env ON agent_messages(env_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_messages_to ON agent_messages(to_agent_id, read);
+    `);
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

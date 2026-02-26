@@ -6,7 +6,7 @@ import { getDb } from './db';
 import { getEnvConfig } from './env-config';
 import * as proxmox from './proxmox';
 import { getScript } from './community-scripts';
-import { runPipeline, injectSpyreTracking, installClaudeInEnvironment } from './provisioner';
+import { runPipeline, injectSpyreTracking, installClaudeInEnvironment, injectMcpConfig } from './provisioner';
 import type { ProvisionerContext } from './provisioner';
 import { broadcastProvisioningEvent } from './provisioning-events';
 import { getPersona } from './personas';
@@ -742,6 +742,13 @@ async function createViaCommunityScript(
       broadcastProvisioningEvent(id, { phase: 'claude_install', step: msg, status: 'error' });
       // Still non-fatal — don't fail the entire provisioning
     }
+
+    // Inject MCP config for bare environment agents
+    try {
+      await injectMcpConfig(ctx.exec, id, 'env-agent');
+    } catch (mcpErr) {
+      console.warn('[spyre] MCP config injection failed (non-fatal):', mcpErr);
+    }
   }
 
   // Propagate GitHub auth if repo URL is configured
@@ -1168,6 +1175,13 @@ async function createViaProxmoxApi(
       logProvisioningStep(id, 'claude_install', 'error', msg);
       broadcastProvisioningEvent(id, { phase: 'claude_install', step: msg, status: 'error' });
       // Still non-fatal — don't fail the entire provisioning
+    }
+
+    // Inject MCP config for bare environment agents
+    try {
+      await injectMcpConfig(ctx.exec, id, 'env-agent');
+    } catch (mcpErr) {
+      console.warn('[spyre] MCP config injection failed (non-fatal):', mcpErr);
     }
   }
 
