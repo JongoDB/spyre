@@ -13,13 +13,13 @@ export const GET: RequestHandler = async ({ url }) => {
 export const POST: RequestHandler = async ({ request }) => {
   try {
     const body = await request.json();
-    const { env_id, name, description, template_id, steps } = body;
+    const { env_id, name, description, template_id, auto_approve, steps } = body;
 
     if (!env_id || !name || !Array.isArray(steps) || steps.length === 0) {
       return json({ code: 'INVALID_REQUEST', message: 'env_id, name, and steps[] are required' }, { status: 400 });
     }
 
-    const pipeline = createPipeline({ env_id, name, description, template_id, steps });
+    const pipeline = createPipeline({ env_id, name, description, template_id, auto_approve, steps });
     return json(pipeline, { status: 201 });
   } catch (err) {
     const e = err as { code?: string; message?: string };

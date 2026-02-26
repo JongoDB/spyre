@@ -474,6 +474,12 @@ function applyMigrations(db: Database.Database): void {
     `);
   }
 
+  // auto_approve column on pipelines (v0.12.0)
+  const pipelineCols = db.pragma('table_info(pipelines)') as Array<{ name: string }>;
+  if (pipelineCols.length > 0 && !pipelineCols.some(c => c.name === 'auto_approve')) {
+    db.exec('ALTER TABLE pipelines ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

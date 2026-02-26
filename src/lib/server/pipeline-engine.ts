@@ -109,17 +109,17 @@ export function createPipeline(req: CreatePipelineRequest): Pipeline {
   if (!env) throw { code: 'NOT_FOUND', message: 'Environment not found' };
 
   const insertPipeline = db.prepare(`
-    INSERT INTO pipelines (id, env_id, template_id, name, description, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'draft', datetime('now'), datetime('now'))
+    INSERT INTO pipelines (id, env_id, template_id, name, description, auto_approve, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'draft', datetime('now'), datetime('now'))
   `);
 
   const insertStep = db.prepare(`
-    INSERT INTO pipeline_steps (id, pipeline_id, position, type, label, devcontainer_id, persona_id, prompt_template, gate_instructions, max_retries)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO pipeline_steps (id, pipeline_id, position, type, label, devcontainer_id, persona_id, prompt_template, gate_instructions, max_retries, timeout_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   db.transaction(() => {
-    insertPipeline.run(id, req.env_id, req.template_id ?? null, req.name, req.description ?? null);
+    insertPipeline.run(id, req.env_id, req.template_id ?? null, req.name, req.description ?? null, req.auto_approve ? 1 : 0);
 
     for (const step of req.steps) {
       insertStep.run(
@@ -132,7 +132,8 @@ export function createPipeline(req: CreatePipelineRequest): Pipeline {
         step.persona_id ?? null,
         step.prompt_template ?? null,
         step.gate_instructions ?? null,
-        step.max_retries ?? 0
+        step.max_retries ?? 0,
+        step.timeout_ms ?? null
       );
     }
   })();
@@ -279,7 +280,26 @@ async function advancePipeline(pipelineId: string): Promise<void> {
     // After reconciliation, re-check state by recursing
     return advancePipeline(pipelineId);
   }
-  if (stepsAtCurrent.some(s => s.status === 'waiting')) return;
+  // Check for waiting gates — auto-approve non-final gates in hands-off mode
+  const waitingSteps = stepsAtCurrent.filter(s => s.status === 'waiting');
+  if (waitingSteps.length > 0) {
+    // Only auto-approve if no other steps are still running
+    const stillRunning = stepsAtCurrent.some(s => s.status === 'running');
+    if (!stillRunning && pipeline.auto_approve) {
+      const allPositions = [...new Set(allSteps.map(s => s.position))].sort((a, b) => a - b);
+      const isFinalPosition = currentPos === allPositions[allPositions.length - 1];
+      if (!isFinalPosition) {
+        for (const g of waitingSteps) {
+          await handleGateDecision(pipelineId, g.id, {
+            action: 'approve',
+            feedback: 'Auto-approved (hands-off mode)'
+          });
+        }
+        return;
+      }
+    }
+    return;
+  }
 
   // Check for pending steps that need dispatching (initial start, post-revise, or retry)
   const pendingSteps = stepsAtCurrent.filter(s => s.status === 'pending');
@@ -300,8 +320,23 @@ async function advancePipeline(pipelineId: string): Promise<void> {
       }
     }
 
-    // If only gates at this position (no agents dispatched), pause for human review
+    // If only gates at this position (no agents dispatched), check auto-approve or pause
     if (hasGate && !dispatchedAgents) {
+      if (pipeline.auto_approve) {
+        const allPositions = [...new Set(allSteps.map(s => s.position))].sort((a, b) => a - b);
+        const isFinalPosition = currentPos === allPositions[allPositions.length - 1];
+        if (!isFinalPosition) {
+          // Auto-approve all waiting gates at this position
+          const waitingGates = stepsAtCurrent.filter(s => s.type === 'gate');
+          for (const g of waitingGates) {
+            await handleGateDecision(pipelineId, g.id, {
+              action: 'approve',
+              feedback: 'Auto-approved (hands-off mode)'
+            });
+          }
+          return;
+        }
+      }
       db.prepare(
         "UPDATE pipelines SET status = 'paused', updated_at = datetime('now') WHERE id = ?"
       ).run(pipelineId);
@@ -375,11 +410,13 @@ async function advancePipeline(pipelineId: string): Promise<void> {
 
   // Dispatch each step at next position
   let hasGate = false;
+  let hasAgent = false;
   for (const step of stepsAtNext) {
     if (step.status !== 'pending') continue;
 
     if (step.type === 'agent') {
       await dispatchAgentStep(pipeline, step);
+      hasAgent = true;
     } else if (step.type === 'gate') {
       db.prepare(
         "UPDATE pipeline_steps SET status = 'waiting', started_at = datetime('now') WHERE id = ?"
@@ -389,7 +426,21 @@ async function advancePipeline(pipelineId: string): Promise<void> {
     }
   }
 
-  if (hasGate) {
+  if (hasGate && !hasAgent) {
+    if (pipeline.auto_approve) {
+      const allPositions = [...new Set(allSteps.map(s => s.position))].sort((a, b) => a - b);
+      const isFinalPosition = nextPos === allPositions[allPositions.length - 1];
+      if (!isFinalPosition) {
+        const waitingGates = stepsAtNext.filter(s => s.type === 'gate');
+        for (const g of waitingGates) {
+          await handleGateDecision(pipelineId, g.id, {
+            action: 'approve',
+            feedback: 'Auto-approved (hands-off mode)'
+          });
+        }
+        return;
+      }
+    }
     db.prepare(
       "UPDATE pipelines SET status = 'paused', updated_at = datetime('now') WHERE id = ?"
     ).run(pipelineId);
@@ -530,6 +581,14 @@ function buildStepPrompt(pipeline: Pipeline, step: PipelineStep): string {
       parts.push('```');
       parts.push('');
     }
+  }
+
+  if (latestSnapshot?.git_status) {
+    parts.push('## Modified Files');
+    parts.push('```');
+    parts.push(latestSnapshot.git_status);
+    parts.push('```');
+    parts.push('');
   }
 
   // 5. This step's prompt
@@ -871,7 +930,7 @@ async function captureGitSnapshot(
 
     const result = await new Promise<{ stdout: string }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timeout')), 15000);
-      const cmd = `cd '${projectDir}' 2>/dev/null && git diff --stat HEAD 2>/dev/null; echo '---SEP---'; git status --short 2>/dev/null; echo '---SEP---'; git rev-parse HEAD 2>/dev/null`;
+      const cmd = `cd '${projectDir}' 2>/dev/null && git diff HEAD 2>/dev/null | head -c 10000; echo '---SEP---'; git diff --stat HEAD 2>/dev/null; echo '---SEP---'; git status --short 2>/dev/null; echo '---SEP---'; git rev-parse HEAD 2>/dev/null`;
       client.exec(cmd, (err, stream) => {
         if (err) { clearTimeout(timer); reject(err); return; }
         let stdout = '';
@@ -884,7 +943,10 @@ async function captureGitSnapshot(
     const parts = result.stdout.split('---SEP---');
     gitDiff = (parts[0] ?? '').trim() || null;
     gitStatus = (parts[1] ?? '').trim() || null;
-    commitHash = (parts[2] ?? '').trim() || null;
+    const gitShort = (parts[2] ?? '').trim() || null;
+    commitHash = (parts[3] ?? '').trim() || null;
+    // Use git status --short as the primary git_status if available
+    if (gitShort) gitStatus = gitShort;
   } catch {
     // Non-critical — continue without snapshot
   }
@@ -951,11 +1013,33 @@ if (!g[RECONCILE_KEY]) {
   g[RECONCILE_KEY] = setInterval(async () => {
     try {
       const db = getDb();
-      const running = db.prepare(
-        "SELECT DISTINCT pipeline_id FROM pipeline_steps WHERE status = 'running' AND task_id IS NOT NULL"
-      ).all() as Array<{ pipeline_id: string }>;
 
-      for (const { pipeline_id } of running) {
+      // Check for timed-out steps
+      const runningSteps = db.prepare(
+        "SELECT id, pipeline_id, task_id, timeout_ms, started_at FROM pipeline_steps WHERE status = 'running' AND task_id IS NOT NULL"
+      ).all() as Array<{ id: string; pipeline_id: string; task_id: string | null; timeout_ms: number | null; started_at: string | null }>;
+
+      for (const rs of runningSteps) {
+        if (rs.timeout_ms && rs.started_at) {
+          const elapsed = Date.now() - new Date(rs.started_at + 'Z').getTime();
+          if (elapsed > rs.timeout_ms) {
+            console.log(`[spyre] Step ${rs.id} timed out after ${Math.round(rs.timeout_ms / 1000)}s`);
+            if (rs.task_id) {
+              try {
+                const { cancelTask } = await import('./claude-bridge');
+                cancelTask(rs.task_id);
+              } catch { /* ignore */ }
+            }
+            db.prepare(
+              "UPDATE pipeline_steps SET status = 'error', result_summary = ?, completed_at = datetime('now') WHERE id = ?"
+            ).run(`Step timed out after ${Math.round(rs.timeout_ms / 1000)}s`, rs.id);
+          }
+        }
+      }
+
+      // Reconcile stuck pipelines
+      const pipelineIds = [...new Set(runningSteps.map(s => s.pipeline_id))];
+      for (const pipeline_id of pipelineIds) {
         try {
           await advancePipeline(pipeline_id);
         } catch {

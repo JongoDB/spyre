@@ -13,6 +13,7 @@
 		prompt_template: string;
 		gate_instructions: string;
 		max_retries: number;
+		timeout_min: number | null;
 	}
 
 	interface Props {
@@ -29,6 +30,7 @@
 
 	let name = $state('');
 	let description = $state('');
+	let autoApprove = $state(false);
 	let steps = $state<StepDraft[]>([makeStep(1)]);
 	let creating = $state(false);
 	let savingTemplate = $state(false);
@@ -110,7 +112,8 @@
 					persona_id: dc?.persona_id ?? '',
 					prompt_template: ps.prompt ?? '',
 					gate_instructions: ps.gate_instructions ?? '',
-					max_retries: 0
+					max_retries: 0,
+					timeout_min: null
 				});
 			}
 		} else {
@@ -125,7 +128,8 @@
 					persona_id: dc?.persona_id ?? '',
 					prompt_template: ps.prompt ?? '',
 					gate_instructions: ps.gate_instructions ?? '',
-					max_retries: 0
+					max_retries: 0,
+					timeout_min: null
 				});
 			}
 		}
@@ -145,7 +149,8 @@
 			persona_id: '',
 			prompt_template: '',
 			gate_instructions: '',
-			max_retries: 0
+			max_retries: 0,
+			timeout_min: null
 		};
 	}
 
@@ -209,6 +214,7 @@
 					env_id: envId,
 					name: name.trim(),
 					description: description.trim() || undefined,
+					auto_approve: autoApprove || undefined,
 					steps: steps.map(s => ({
 						position: s.position,
 						type: s.type,
@@ -217,7 +223,8 @@
 						persona_id: s.persona_id || undefined,
 						prompt_template: s.prompt_template || undefined,
 						gate_instructions: s.gate_instructions || undefined,
-						max_retries: s.max_retries
+						max_retries: s.max_retries,
+						timeout_ms: s.timeout_min ? s.timeout_min * 60 * 1000 : undefined
 					}))
 				})
 			});
@@ -321,6 +328,11 @@
 				<input id="pipe-desc" class="form-input" bind:value={description} placeholder="Brief description of the pipeline goal" />
 			</div>
 		</div>
+		<label class="auto-approve-toggle">
+			<input type="checkbox" bind:checked={autoApprove} />
+			<span class="toggle-label">Hands-off mode</span>
+			<span class="toggle-hint">Auto-approve intermediate gates; pause only at final review</span>
+		</label>
 	</div>
 
 	<div class="steps-section">
@@ -365,10 +377,16 @@
 										<label>Prompt</label>
 										<textarea class="form-input prompt-input" bind:value={step.prompt_template} placeholder="Task instructions for this agent..." rows="3"></textarea>
 									</div>
+									<div class="step-inline-fields">
 									<div class="form-group form-inline">
 										<label>Max retries</label>
 										<input type="number" class="form-input retries-input" bind:value={step.max_retries} min="0" max="5" />
 									</div>
+									<div class="form-group form-inline">
+										<label>Timeout (min)</label>
+										<input type="number" class="form-input retries-input" bind:value={step.timeout_min} placeholder="--" min="1" max="120" />
+									</div>
+								</div>
 								</div>
 							{:else}
 								<div class="step-fields">
@@ -501,6 +519,19 @@
 		font-size: 0.8125rem; background: var(--bg-secondary);
 		border: 1px dashed var(--border); border-radius: var(--radius-sm);
 	}
+
+	.auto-approve-toggle {
+		display: flex; align-items: center; gap: 8px; cursor: pointer;
+		padding: 8px 12px; background: var(--bg-secondary);
+		border: 1px solid var(--border); border-radius: var(--radius-sm);
+		transition: border-color var(--transition);
+	}
+	.auto-approve-toggle:hover { border-color: var(--accent); }
+	.auto-approve-toggle input[type="checkbox"] { accent-color: var(--accent); }
+	.toggle-label { font-size: 0.8125rem; font-weight: 500; color: var(--text-primary); }
+	.toggle-hint { font-size: 0.6875rem; color: var(--text-secondary); }
+
+	.step-inline-fields { display: flex; gap: 16px; align-items: center; }
 
 	.builder-footer {
 		display: flex; align-items: center; justify-content: space-between;

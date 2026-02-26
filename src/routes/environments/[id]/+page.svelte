@@ -103,6 +103,10 @@
 	let activeAgentTaskId = $state<string | null>(null);
 	let activeAgentDcId = $state<string | null>(null);
 
+	// Services state
+	let services = $state<Array<{ id: string; port: number; name: string; status: string }>>([]);
+	let scanningServices = $state(false);
+
 	// Pipeline state
 	let pipelines = $state<PipelineListItem[]>(data.pipelines ?? []);
 	let pipelineView = $state<'list' | 'builder' | 'runner'>('list');
@@ -245,6 +249,31 @@
 		} catch { /* ignore */ }
 	}
 
+	async function fetchServices() {
+		try {
+			const res = await fetch(`/api/environments/${env.id}/services`);
+			if (res.ok) services = await res.json();
+		} catch { /* ignore */ }
+	}
+
+	async function scanServices() {
+		scanningServices = true;
+		try {
+			const res = await fetch(`/api/environments/${env.id}/services`, { method: 'POST' });
+			if (res.ok) {
+				services = await res.json();
+				addToast('Service scan complete', 'success');
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Scan failed', 'error');
+			}
+		} catch {
+			addToast('Network error during scan', 'error');
+		} finally {
+			scanningServices = false;
+		}
+	}
+
 	const rootPassword = $derived(
 		metadata?.root_password ? String(metadata.root_password) : null
 	);
@@ -324,6 +353,10 @@
 		// Fetch provisioning log immediately if env is provisioning
 		if (env.status === 'provisioning') {
 			fetchProvisioningLog();
+		}
+		// Fetch services for running environments
+		if (env.status === 'running' && env.ip_address) {
+			fetchServices();
 		}
 	});
 
@@ -590,6 +623,35 @@
 			</div>
 		{/if}
 	</div>
+
+	<!-- Services -->
+	{#if env.status === 'running' && env.ip_address}
+		<div class="services-section card">
+			<div class="services-header">
+				<h3>Services</h3>
+				<button class="btn btn-sm btn-secondary" onclick={scanServices} disabled={scanningServices}>
+					{scanningServices ? 'Scanning...' : 'Scan Services'}
+				</button>
+			</div>
+			{#if services.filter(s => s.status === 'up').length > 0}
+				<div class="services-list">
+					{#each services.filter(s => s.status === 'up') as svc (svc.id)}
+						<a
+							href="/preview/{env.id}/{svc.port}"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="service-chip"
+						>
+							<span class="service-chip-name">{svc.name}</span>
+							<code>:{svc.port}</code>
+						</a>
+					{/each}
+				</div>
+			{:else if !scanningServices}
+				<p class="services-empty">No services detected. Click "Scan Services" to check for listening ports.</p>
+			{/if}
+		</div>
+	{/if}
 
 	<!-- Tab switcher for running environments -->
 	{#if env.status === 'running' && env.ip_address}
@@ -1084,6 +1146,68 @@
 		font-size: 0.6875rem;
 		color: var(--text-secondary);
 		font-family: 'SF Mono', 'Fira Code', monospace;
+	}
+
+	/* ---- Services section ---- */
+
+	.services-section {
+		margin-bottom: 16px;
+		flex-shrink: 0;
+		padding: 14px 20px;
+	}
+
+	.services-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 10px;
+	}
+
+	.services-header h3 {
+		font-size: 0.875rem;
+		font-weight: 600;
+		margin: 0;
+	}
+
+	.services-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.service-chip {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 12px;
+		border-radius: var(--radius-sm);
+		background: rgba(99, 102, 241, 0.08);
+		border: 1px solid rgba(99, 102, 241, 0.2);
+		text-decoration: none;
+		color: var(--text-primary);
+		font-size: 0.8125rem;
+		transition: background-color var(--transition), border-color var(--transition);
+	}
+
+	.service-chip:hover {
+		background: rgba(99, 102, 241, 0.15);
+		border-color: rgba(99, 102, 241, 0.35);
+	}
+
+	.service-chip-name {
+		font-weight: 500;
+	}
+
+	.service-chip code {
+		font-size: 0.75rem;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		color: var(--accent);
+	}
+
+	.services-empty {
+		font-size: 0.8125rem;
+		color: var(--text-secondary);
+		margin: 0;
 	}
 
 	/* ---- Tab switcher ---- */

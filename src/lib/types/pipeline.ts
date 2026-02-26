@@ -4,6 +4,7 @@ export interface Pipeline {
   template_id: string | null;
   name: string;
   description: string | null;
+  auto_approve: boolean;
   status: 'draft' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
   current_position: number | null;
   total_cost_usd: number;
@@ -78,6 +79,7 @@ export interface CreatePipelineRequest {
   env_id: string;
   name: string;
   description?: string;
+  auto_approve?: boolean;
   template_id?: string;
   steps: Array<{
     position: number;
@@ -88,6 +90,7 @@ export interface CreatePipelineRequest {
     prompt_template?: string;
     gate_instructions?: string;
     max_retries?: number;
+    timeout_ms?: number;
   }>;
 }
 

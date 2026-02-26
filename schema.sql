@@ -615,6 +615,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
     template_id      TEXT REFERENCES pipeline_templates(id) ON DELETE SET NULL,
     name             TEXT NOT NULL,
     description      TEXT,
+    auto_approve     INTEGER NOT NULL DEFAULT 0,
     status           TEXT NOT NULL DEFAULT 'draft'
                      CHECK (status IN ('draft','running','paused','completed','failed','cancelled')),
     current_position INTEGER,

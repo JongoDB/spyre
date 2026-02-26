@@ -22,6 +22,10 @@
 	let templateName = $state('');
 	let showSaveTemplate = $state(false);
 
+	// Detected services after pipeline completion
+	let detectedServices = $state<Array<{ port: number; name: string; status: string }>>([]);
+	let scanningServices = $state(false);
+
 	// Pipeline-level elapsed timer
 	let pipelineElapsed = $state(0);
 	let pipelineTimerInterval: ReturnType<typeof setInterval> | null = null;
@@ -82,6 +86,35 @@
 			if (res.ok) pipeline = await res.json();
 		} catch { /* ignore */ }
 		loading = false;
+
+		// Fetch services when pipeline is completed
+		if (pipeline?.status === 'completed' && detectedServices.length === 0) {
+			await fetchServices();
+		}
+	}
+
+	async function fetchServices() {
+		if (!pipeline?.env_id) return;
+		try {
+			const res = await fetch(`/api/environments/${pipeline.env_id}/services`);
+			if (res.ok) {
+				const services = await res.json();
+				detectedServices = services.filter((s: { status: string }) => s.status === 'up');
+			}
+		} catch { /* ignore */ }
+	}
+
+	async function scanServices() {
+		if (!pipeline?.env_id || scanningServices) return;
+		scanningServices = true;
+		try {
+			const res = await fetch(`/api/environments/${pipeline.env_id}/services`, { method: 'POST' });
+			if (res.ok) {
+				const services = await res.json();
+				detectedServices = services.filter((s: { status: string }) => s.status === 'up');
+			}
+		} catch { /* ignore */ }
+		finally { scanningServices = false; }
 	}
 
 	function connectSSE() {
@@ -227,6 +260,40 @@
 		} catch { addToast('Network error', 'error'); }
 	}
 
+	async function runAgain() {
+		if (!pipeline) return;
+		try {
+			const res = await fetch('/api/pipelines', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					env_id: pipeline.env_id,
+					name: `${pipeline.name} (retry)`,
+					description: pipeline.description,
+					auto_approve: pipeline.auto_approve || undefined,
+					steps: pipeline.steps.map(s => ({
+						position: s.position, type: s.type, label: s.label,
+						devcontainer_id: s.devcontainer_id, persona_id: s.persona_id,
+						prompt_template: s.prompt_template, gate_instructions: s.gate_instructions,
+						max_retries: s.max_retries,
+						timeout_ms: s.timeout_ms || undefined
+					}))
+				})
+			});
+			if (res.ok) {
+				const newPipeline = await res.json();
+				// Immediately start
+				await fetch(`/api/pipelines/${newPipeline.id}/start`, { method: 'POST' });
+				addToast('Pipeline cloned and started', 'success');
+				onRefresh();
+				if (onClone) onClone(newPipeline.id);
+			} else {
+				const body = await res.json().catch(() => ({}));
+				addToast(body.message ?? 'Failed to run again', 'error');
+			}
+		} catch { addToast('Network error', 'error'); }
+	}
+
 	async function clonePipeline() {
 		if (!pipeline) return;
 		try {
@@ -237,11 +304,13 @@
 					env_id: pipeline.env_id,
 					name: `${pipeline.name} (copy)`,
 					description: pipeline.description,
+					auto_approve: pipeline.auto_approve || undefined,
 					steps: pipeline.steps.map(s => ({
 						position: s.position, type: s.type, label: s.label,
 						devcontainer_id: s.devcontainer_id, persona_id: s.persona_id,
 						prompt_template: s.prompt_template, gate_instructions: s.gate_instructions,
-						max_retries: s.max_retries
+						max_retries: s.max_retries,
+						timeout_ms: s.timeout_ms || undefined
 					}))
 				})
 			});
@@ -394,6 +463,9 @@
 					<div class="header-title-row">
 						<h3>{pipeline.name}</h3>
 						<span class="pipeline-status" style="color: {statusColor(pipeline.status)}">{pipeline.status}</span>
+						{#if pipeline.auto_approve}
+							<span class="mode-badge auto">Hands-off</span>
+						{/if}
 					</div>
 					{#if pipeline.description}
 						<span class="header-desc">{pipeline.description}</span>
@@ -411,6 +483,9 @@
 					<button class="btn btn-sm btn-primary" onclick={startPipeline}>
 						{pipeline.status === 'failed' ? 'Restart' : 'Start'}
 					</button>
+				{/if}
+				{#if pipeline.status === 'completed' || pipeline.status === 'failed' || pipeline.status === 'cancelled'}
+					<button class="btn btn-sm btn-primary" onclick={runAgain}>Run Again</button>
 				{/if}
 				{#if pipeline.status === 'running' || pipeline.status === 'paused'}
 					<button class="btn btn-sm btn-danger" disabled={cancelling} onclick={cancelPipeline}>
@@ -484,6 +559,31 @@
 						<pre class="completion-step-result">{step.result_summary}</pre>
 					</div>
 				{/each}
+				{#if detectedServices.length > 0}
+					<div class="completion-services">
+						<span class="completion-services-title">Detected Services</span>
+						<div class="completion-services-list">
+							{#each detectedServices as svc (svc.port)}
+								<a
+									href="/preview/{pipeline.env_id}/{svc.port}"
+									target="_blank"
+									rel="noopener noreferrer"
+									class="service-link"
+								>
+									<span class="service-name">{svc.name}</span>
+									<code>:{svc.port}</code>
+									<span class="service-open">Open Preview</span>
+								</a>
+							{/each}
+						</div>
+					</div>
+				{:else if pipeline.status === 'completed'}
+					<div class="completion-services">
+						<button class="btn btn-sm btn-secondary" onclick={scanServices} disabled={scanningServices}>
+							{scanningServices ? 'Scanning...' : 'Scan for Services'}
+						</button>
+					</div>
+				{/if}
 				<div class="completion-hint">
 					Check the environment terminal for file changes, or review git log for commits made during the pipeline.
 				</div>
@@ -568,7 +668,9 @@
 											{#if step.devcontainer_service}
 												<span class="step-dc">{step.devcontainer_service}</span>
 											{/if}
-											<span class="step-status-text" style="color: {statusColor(step.status)}">{step.status}</span>
+											<span class="step-status-text" style="color: {statusColor(step.status)}">
+												{step.type === 'gate' && step.gate_feedback === 'Auto-approved (hands-off mode)' ? 'auto-approved' : step.status}
+											</span>
 											{#if step.cost_usd}
 												<span class="step-cost">${step.cost_usd.toFixed(4)}</span>
 											{/if}
@@ -585,9 +687,9 @@
 									<svg class="expand-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
 								</button>
 
-								<!-- Live activity feed for running agent steps -->
-								{#if step.status === 'running' && step.task_id && step.type === 'agent'}
-									<PipelineStepActivity taskId={step.task_id} compact />
+								<!-- Live activity feed for running agent steps; expandable for completed/error -->
+								{#if step.task_id && step.type === 'agent' && (step.status === 'running' || (expandedSteps.has(step.id) && (step.status === 'completed' || step.status === 'error')))}
+									<PipelineStepActivity taskId={step.task_id} compact={step.status === 'running'} />
 								{/if}
 
 								{#if expandedSteps.has(step.id)}
@@ -612,7 +714,9 @@
 										{/if}
 										{#if step.gate_feedback}
 											<div class="detail-section">
-												<span class="detail-label">Reviewer Feedback</span>
+												<span class="detail-label">
+													{step.gate_feedback === 'Auto-approved (hands-off mode)' ? 'Auto-Approved' : 'Reviewer Feedback'}
+												</span>
 												<pre class="detail-content">{step.gate_feedback}</pre>
 											</div>
 										{/if}
@@ -685,6 +789,13 @@
 	.header-info h3 { font-size: 0.9375rem; font-weight: 600; margin: 0; }
 	.header-desc { font-size: 0.75rem; color: var(--text-secondary); }
 	.pipeline-status { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+	.mode-badge {
+		font-size: 0.625rem; font-weight: 700; text-transform: uppercase;
+		padding: 2px 8px; border-radius: 8px; letter-spacing: 0.04em;
+	}
+	.mode-badge.auto {
+		background: rgba(99,102,241,0.12); color: var(--accent);
+	}
 	.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 	.stat-badge {
 		font-size: 0.75rem; color: var(--text-secondary);
@@ -752,6 +863,37 @@
 	.completion-hint {
 		font-size: 0.75rem; color: var(--text-secondary); font-style: italic;
 		padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05);
+	}
+	.completion-services {
+		display: flex; flex-direction: column; gap: 8px;
+		padding: 10px 12px; background: rgba(99,102,241,0.04);
+		border-radius: var(--radius-sm); border: 1px solid rgba(99,102,241,0.15);
+	}
+	.completion-services-title {
+		font-size: 0.6875rem; font-weight: 600; text-transform: uppercase;
+		letter-spacing: 0.04em; color: var(--accent);
+	}
+	.completion-services-list {
+		display: flex; flex-wrap: wrap; gap: 6px;
+	}
+	.service-link {
+		display: flex; align-items: center; gap: 6px;
+		padding: 6px 12px; border-radius: var(--radius-sm);
+		background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
+		text-decoration: none; color: var(--text-primary);
+		font-size: 0.8125rem; transition: background 0.15s, border-color 0.15s;
+	}
+	.service-link:hover {
+		background: rgba(99,102,241,0.15); border-color: rgba(99,102,241,0.35);
+	}
+	.service-link .service-name { font-weight: 500; }
+	.service-link code {
+		font-size: 0.75rem; font-family: 'SF Mono', monospace;
+		color: var(--text-secondary);
+	}
+	.service-link .service-open {
+		font-size: 0.6875rem; color: var(--accent); font-weight: 600;
+		margin-left: 4px;
 	}
 
 	/* Active step banner */
