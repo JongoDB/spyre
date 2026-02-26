@@ -689,12 +689,13 @@
 						<div class="dc-dispatch-form">
 							<textarea
 								class="form-input"
-								placeholder="Enter task prompt..."
+								placeholder="Enter task prompt... (Ctrl+Enter to dispatch)"
 								bind:value={dcDispatchPrompt}
 								rows="3"
+								onkeydown={(e) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); dispatchToDevcontainer(); } }}
 							></textarea>
 							<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
-								{dcDispatching ? 'Dispatching...' : 'Dispatch'}
+								{dcDispatching ? 'Dispatching...' : 'Dispatch (Ctrl+Enter)'}
 							</button>
 						</div>
 					</div>

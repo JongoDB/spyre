@@ -175,7 +175,6 @@
 	.activity {
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		overflow: hidden;
 		margin-top: 8px;
 	}
 
