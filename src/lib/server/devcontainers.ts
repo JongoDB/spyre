@@ -81,7 +81,7 @@ export async function devcontainerExec(
   if (dc.status !== 'running') throw new Error(`Devcontainer ${dcId} is not running (status: ${dc.status})`);
 
   const escaped = command.replace(/'/g, "'\\''");
-  const dockerCmd = `docker exec ${dc.container_name} bash -c '${escaped}'`;
+  const dockerCmd = `docker exec -u spyre ${dc.container_name} bash -c '${escaped}'`;
   return envExec(dc.env_id, dockerCmd, timeoutMs);
 }
 
@@ -168,6 +168,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Non-root user for Claude Code (--dangerously-skip-permissions requires non-root)
+RUN useradd -m -s /bin/bash spyre \\
+    && echo 'spyre ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/spyre \\
+    && chmod 440 /etc/sudoers.d/spyre
+
+USER spyre
+
 # Working directory
 WORKDIR /workspace
 
@@ -194,9 +201,9 @@ export function generateComposeFile(
       container_name: dc.container_name,
       volumes: [
         `${env.project_dir}:/workspace`,
-        `claude-auth-${svc}:/root/.claude`,
-        `gh-config-${svc}:/root/.config/gh`,
-        `shell-history-${svc}:/root/.shell-history`,
+        `claude-auth-${svc}:/home/spyre/.claude`,
+        `gh-config-${svc}:/home/spyre/.config/gh`,
+        `shell-history-${svc}:/home/spyre/.shell-history`,
       ],
       environment: [
         'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1',
@@ -218,6 +225,7 @@ export function generateComposeFile(
     yaml += `  ${name}:\n`;
     yaml += `    build: ${svc.build}\n`;
     yaml += `    container_name: ${svc.container_name}\n`;
+    yaml += `    network_mode: host\n`;
     yaml += `    volumes:\n`;
     for (const vol of svc.volumes as string[]) {
       yaml += `      - ${vol}\n`;
@@ -293,9 +301,10 @@ async function propagateClaudeAuthToDevcontainer(
 
   // Create .claude dir and write credentials inside the devcontainer
   const cmds = [
-    `docker exec ${containerName} mkdir -p /root/.claude`,
-    `docker exec ${containerName} bash -c 'cat > /root/.claude/.credentials.json << CREDS_EOF\n${credentials}\nCREDS_EOF'`,
-    `docker exec ${containerName} chmod 600 /root/.claude/.credentials.json`,
+    `docker exec ${containerName} mkdir -p /home/spyre/.claude`,
+    `docker exec ${containerName} bash -c 'cat > /home/spyre/.claude/.credentials.json << CREDS_EOF\n${credentials}\nCREDS_EOF'`,
+    `docker exec ${containerName} chmod 600 /home/spyre/.claude/.credentials.json`,
+    `docker exec ${containerName} chown -R spyre:spyre /home/spyre/.claude`,
   ];
 
   for (const cmd of cmds) {
@@ -306,13 +315,17 @@ async function propagateClaudeAuthToDevcontainer(
   await envExec(envId,
     `docker exec ${containerName} bash -c 'node -e "` +
     `const fs = require(\\\"fs\\\");` +
-    `const p = \\\"/root/.claude.json\\\";` +
+    `const p = \\\"/home/spyre/.claude.json\\\";` +
     `let c = {};` +
     `try { c = JSON.parse(fs.readFileSync(p, \\\"utf8\\\")); } catch(e) {}` +
     `c.hasCompletedOnboarding = true;` +
     `if (!c.theme) c.theme = \\\"dark\\\";` +
     `fs.writeFileSync(p, JSON.stringify(c, null, 2));` +
     `"'`,
+    10000
+  );
+  await envExec(envId,
+    `docker exec ${containerName} chown spyre:spyre /home/spyre/.claude.json`,
     10000
   );
 
@@ -332,12 +345,13 @@ async function propagateGitHubAuthToDevcontainer(
 
   const gitUser = personaName ? personaName.toLowerCase().replace(/\s+/g, '-') : 'spyre-agent';
   const cmds = [
-    `docker exec ${containerName} git config --global user.name "${gitUser}"`,
-    `docker exec ${containerName} git config --global user.email "${gitUser}@spyre.local"`,
-    `docker exec ${containerName} mkdir -p /root/.config/gh`,
-    `docker exec ${containerName} bash -c 'cat > /root/.config/gh/hosts.yml << GH_EOF\ngithub.com:\n  oauth_token: ${token}\n  git_protocol: https\nGH_EOF'`,
-    `docker exec ${containerName} chmod 600 /root/.config/gh/hosts.yml`,
-    `docker exec ${containerName} git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${token}"; }; f'`,
+    `docker exec -u spyre ${containerName} git config --global user.name "${gitUser}"`,
+    `docker exec -u spyre ${containerName} git config --global user.email "${gitUser}@spyre.local"`,
+    `docker exec ${containerName} mkdir -p /home/spyre/.config/gh`,
+    `docker exec ${containerName} bash -c 'cat > /home/spyre/.config/gh/hosts.yml << GH_EOF\ngithub.com:\n  oauth_token: ${token}\n  git_protocol: https\nGH_EOF'`,
+    `docker exec ${containerName} chmod 600 /home/spyre/.config/gh/hosts.yml`,
+    `docker exec ${containerName} chown -R spyre:spyre /home/spyre/.config`,
+    `docker exec -u spyre ${containerName} git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${token}"; }; f'`,
   ];
 
   for (const cmd of cmds) {
@@ -393,7 +407,7 @@ async function writePersonaClaudeMd(
   parts.push('Update `current_task` and phase statuses as you work.');
 
   const content = parts.join('\n');
-  const cmd = `docker exec ${containerName} bash -c 'mkdir -p /root/.claude && cat > /root/.claude/CLAUDE.md << PERSONA_EOF\n${content}\nPERSONA_EOF'`;
+  const cmd = `docker exec ${containerName} bash -c 'mkdir -p /home/spyre/.claude && cat > /home/spyre/.claude/CLAUDE.md << PERSONA_EOF\n${content}\nPERSONA_EOF && chown -R spyre:spyre /home/spyre/.claude'`;
   await envExec(envId, cmd, 10000);
 }
 

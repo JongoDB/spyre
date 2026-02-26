@@ -405,11 +405,17 @@ export async function propagateCredentialsToEnv(envId: string): Promise<void> {
 
   const client = await getConnection(envId);
 
-  // Write ~/.claude/.credentials.json
-  await sshExec(client, 'mkdir -p /root/.claude', 10000);
-  const writeCmd = `cat > /root/.claude/.credentials.json << 'SPYRE_CREDS_EOF'\n${credsContent}\nSPYRE_CREDS_EOF`;
+  // Create spyre user if it doesn't exist (non-root user for Claude Code)
+  await sshExec(client, 'id spyre 2>/dev/null || useradd -m -s /bin/bash spyre', 10000);
+  await sshExec(client, "echo 'spyre ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/spyre && chmod 440 /etc/sudoers.d/spyre", 10000);
+  // Copy SSH authorized_keys so SSH pool can connect as spyre later
+  await sshExec(client, 'if [ -f /root/.ssh/authorized_keys ]; then mkdir -p /home/spyre/.ssh && cp /root/.ssh/authorized_keys /home/spyre/.ssh/ && chown -R spyre:spyre /home/spyre/.ssh && chmod 700 /home/spyre/.ssh && chmod 600 /home/spyre/.ssh/authorized_keys; fi', 10000);
+
+  // Write credentials to /home/spyre/.claude/
+  await sshExec(client, 'mkdir -p /home/spyre/.claude', 10000);
+  const writeCmd = `cat > /home/spyre/.claude/.credentials.json << 'SPYRE_CREDS_EOF'\n${credsContent}\nSPYRE_CREDS_EOF`;
   await sshExec(client, writeCmd, 10000);
-  await sshExec(client, 'chmod 600 /root/.claude/.credentials.json', 5000);
+  await sshExec(client, 'chmod 600 /home/spyre/.claude/.credentials.json', 5000);
 
   // Write ~/.claude.json with the controller's cachedGrowthBookFeatures.
   // Without this cache, Claude CLI makes a blocking Statsig fetch on startup
@@ -417,10 +423,13 @@ export async function propagateCredentialsToEnv(envId: string): Promise<void> {
   const homeConfig = buildHomeConfigForEnv();
   if (homeConfig) {
     const homeContent = JSON.stringify(homeConfig, null, 2);
-    const writeHome = `cat > /root/.claude.json << 'SPYRE_HOMECFG_EOF'\n${homeContent}\nSPYRE_HOMECFG_EOF`;
+    const writeHome = `cat > /home/spyre/.claude.json << 'SPYRE_HOMECFG_EOF'\n${homeContent}\nSPYRE_HOMECFG_EOF`;
     await sshExec(client, writeHome, 10000);
-    await sshExec(client, 'chmod 600 /root/.claude.json', 5000);
+    await sshExec(client, 'chmod 600 /home/spyre/.claude.json', 5000);
   }
+
+  // Fix ownership of all spyre user files
+  await sshExec(client, 'chown -R spyre:spyre /home/spyre/.claude /home/spyre/.claude.json 2>/dev/null || true', 10000);
 }
 
 /**

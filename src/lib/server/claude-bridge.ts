@@ -624,16 +624,17 @@ async function executeTask(
 
     // Build the claude command.
     // - Use CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 to skip telemetry/update checks
-    // - Use --allowedTools instead of --dangerously-skip-permissions (which fails as root)
+    // - Use --dangerously-skip-permissions for full agent autonomy
+    // - Run as non-root `spyre` user (--dangerously-skip-permissions requires non-root)
     const escapedPrompt = framedPrompt.replace(/'/g, "'\\''");
-    const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
-    const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
     const cdPart = workingDir ? `cd '${workingDir.replace(/'/g, "'\\''")}' && ` : '';
-    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --allowedTools '${allowedTools}'`;
+    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --dangerously-skip-permissions`;
     // Wrap in `script -qc` to provide a PTY. Claude CLI stalls during startup
     // (Statsig feature-flag fetch) when stdout is not a TTY, which happens with
     // ssh2's exec() channel. `script -qc` creates a pseudo-terminal wrapper.
-    const cmd = `${envExports} script -qc "${claudeInvocation.replace(/"/g, '\\"')}" /dev/null`;
+    // Use `su - spyre` to run as non-root user with a proper login shell and HOME.
+    const innerCmd = `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 script -qc "${claudeInvocation.replace(/"/g, '\\"')}" /dev/null`;
+    const cmd = `su - spyre -c '${innerCmd.replace(/'/g, "'\\''")}'`;
 
 
     const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
@@ -664,7 +665,7 @@ async function executeTask(
             const authCheck = await new Promise<{ code: number; stdout: string }>((res, rej) => {
               const t = setTimeout(() => rej(new Error('auth check timeout')), 10000);
               client.exec(
-                'claude auth status 2>&1; echo "---CREDS---"; cat ~/.claude/.credentials.json 2>/dev/null || echo "{}"',
+                'su - spyre -c "claude auth status" 2>&1; echo "---CREDS---"; cat /home/spyre/.claude/.credentials.json 2>/dev/null || echo "{}"',
                 (e, s) => {
                   if (e) { clearTimeout(t); rej(e); return; }
                   let out = '';
@@ -958,13 +959,12 @@ async function executeDevcontainerTask(
 
     // Build the docker exec command
     const escapedPrompt = framedPrompt.replace(/'/g, "'\\''");
-    const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
     const cdPart = workingDir ? `cd '${workingDir.replace(/'/g, "'\\''")}' && ` : '';
-    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --allowedTools '${allowedTools}'`;
+    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --dangerously-skip-permissions`;
     const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
     const innerCmd = `${envExports} script -qc "${claudeInvocation.replace(/"/g, '\\"')}" /dev/null`;
     const escaped = innerCmd.replace(/'/g, "'\\''");
-    const dockerCmd = `docker exec ${dc.container_name} bash -c '${escaped}'`;
+    const dockerCmd = `docker exec -u spyre ${dc.container_name} bash -c '${escaped}'`;
 
     // Execute via SSH to the LXC
     const client = await getConnection(envId);
@@ -1125,10 +1125,9 @@ async function executeResumeTask(
 
     const client = await getConnection(envId);
     const escapedSession = sessionId.replace(/'/g, "'\\''");
-    const allowedTools = 'Bash(command:*),Read,Write(file_path:*),Edit(file_path:*),Glob,Grep,WebFetch,WebSearch,Task';
-    const envExports = 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1;';
-    const resumeInvocation = `claude --resume '${escapedSession}' --output-format stream-json --verbose --allowedTools '${allowedTools}'`;
-    const cmd = `${envExports} script -qc "${resumeInvocation.replace(/"/g, '\\"')}" /dev/null`;
+    const resumeInvocation = `claude --resume '${escapedSession}' --output-format stream-json --verbose --dangerously-skip-permissions`;
+    const innerResumeCmd = `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 script -qc "${resumeInvocation.replace(/"/g, '\\"')}" /dev/null`;
+    const cmd = `su - spyre -c '${innerResumeCmd.replace(/'/g, "'\\''")}'`;
 
     const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
       const timer = setTimeout(() => {

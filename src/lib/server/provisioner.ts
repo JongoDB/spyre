@@ -586,7 +586,7 @@ export async function installClaudeInEnvironment(
       // The installer's `claude install` subcommand often fails in non-interactive
       // SSH/pct-exec contexts (no TTY). Search everywhere for the binary.
       const searchResult = await exec(
-        'export PATH="/root/.local/bin:/root/.claude/local/bin:$PATH"; ' +
+        'export PATH="/home/spyre/.local/bin:/home/spyre/.claude/local/bin:/root/.local/bin:/root/.claude/local/bin:$PATH"; ' +
         'which claude 2>/dev/null || ' +
         'command -v claude 2>/dev/null || ' +
         'find / -name claude \\( -type f -o -type l \\) -executable 2>/dev/null | head -1',
