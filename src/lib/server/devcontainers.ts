@@ -484,6 +484,13 @@ export async function createDevcontainer(input: DevcontainerCreateInput): Promis
         throw new Error(`Docker compose up failed: ${upResult.stderr.slice(-500)}`);
       }
 
+      // Fix /workspace ownership — bind mount from host is root-owned,
+      // but spyre user needs to write to it (project files, .spyre/, etc.)
+      await envExec(input.env_id,
+        `docker exec -u root ${containerName} chown -R spyre:spyre /workspace`,
+        30000
+      );
+
       // Propagate auth
       try {
         await propagateClaudeAuthToDevcontainer(input.env_id, containerName);

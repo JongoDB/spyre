@@ -140,7 +140,7 @@
 	.prev-summary {
 		font-size: 0.75rem; font-family: 'SF Mono', monospace;
 		background: var(--bg-secondary); padding: 6px 10px; border-radius: var(--radius-sm);
-		white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto;
+		white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto;
 		margin: 0;
 	}
 

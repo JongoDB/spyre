@@ -259,8 +259,26 @@ async function advancePipeline(pipelineId: string): Promise<void> {
 
   const stepsAtCurrent = allSteps.filter(s => s.position === currentPos);
 
-  // Check if any step is still running or waiting
-  if (stepsAtCurrent.some(s => s.status === 'running')) return;
+  // Check if any step is still running — but reconcile stale state first.
+  // If the task already completed but the event listener missed it (e.g. Vite HMR
+  // in dev, or emitter race), process the completion now instead of getting stuck.
+  const runningSteps = stepsAtCurrent.filter(s => s.status === 'running');
+  if (runningSteps.length > 0) {
+    let reconciled = false;
+    for (const rs of runningSteps) {
+      if (rs.task_id) {
+        const task = getClaudeTask(rs.task_id);
+        if (task && task.status !== 'pending' && task.status !== 'running') {
+          console.log(`[spyre] Reconciling stale step ${rs.id}: task ${rs.task_id} is ${task.status} but step is still running`);
+          await onStepTaskComplete(pipelineId, rs.id, rs.task_id);
+          reconciled = true;
+        }
+      }
+    }
+    if (!reconciled) return; // genuinely still running
+    // After reconciliation, re-check state by recursing
+    return advancePipeline(pipelineId);
+  }
   if (stepsAtCurrent.some(s => s.status === 'waiting')) return;
 
   // Check for pending steps that need dispatching (initial start, post-revise, or retry)
@@ -603,10 +621,10 @@ async function onStepTaskComplete(pipelineId: string, stepId: string, taskId: st
   if (!pipeline) return;
 
   if (task.status === 'complete') {
-    // Extract result summary (truncate to ~500 chars)
+    // Extract result summary — keep enough for gate reviewers to see useful context
     let summary = task.result ?? '';
-    if (summary.length > 500) {
-      summary = summary.slice(0, 497) + '...';
+    if (summary.length > 4000) {
+      summary = summary.slice(0, 3997) + '...';
     }
 
     db.prepare(
@@ -922,6 +940,32 @@ export async function recoverPipelines(): Promise<void> {
       }
     }
   }
+}
+
+// =============================================================================
+// Periodic Reconciliation — catch stuck steps
+// =============================================================================
+
+const RECONCILE_KEY = '__spyre_pipeline_reconcile_timer__';
+if (!g[RECONCILE_KEY]) {
+  g[RECONCILE_KEY] = setInterval(async () => {
+    try {
+      const db = getDb();
+      const running = db.prepare(
+        "SELECT DISTINCT pipeline_id FROM pipeline_steps WHERE status = 'running' AND task_id IS NOT NULL"
+      ).all() as Array<{ pipeline_id: string }>;
+
+      for (const { pipeline_id } of running) {
+        try {
+          await advancePipeline(pipeline_id);
+        } catch {
+          // Non-critical — will retry next interval
+        }
+      }
+    } catch {
+      // DB not ready or other transient error
+    }
+  }, 15000); // Check every 15 seconds
 }
 
 // =============================================================================
