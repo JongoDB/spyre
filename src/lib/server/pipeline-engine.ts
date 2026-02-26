@@ -4,6 +4,7 @@ import { getDb } from './db';
 import { getEnvironment } from './environments';
 import { dispatch as claudeDispatch, getEmitter as getClaudeEmitter, getTask as getClaudeTask } from './claude-bridge';
 import { getConnection } from './ssh-pool';
+import { scanAndStoreServices } from './service-detector';
 import type {
   Pipeline,
   PipelineStep,
@@ -331,7 +332,18 @@ async function advancePipeline(pipelineId: string): Promise<void> {
       "UPDATE pipelines SET status = 'completed', current_position = ?, total_cost_usd = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
     ).run(currentPos, totalCost, pipelineId);
 
-    emitPipelineEvent(pipelineId, 'completed', { totalCost });
+    // Detect services after pipeline completion
+    let detectedServices: Array<{ port: number; name: string }> = [];
+    try {
+      const services = await scanAndStoreServices(pipeline.env_id);
+      detectedServices = services
+        .filter(s => s.status === 'up')
+        .map(s => ({ port: s.port, name: s.name }));
+    } catch (err) {
+      console.warn(`[spyre] Service detection after pipeline completion failed:`, err);
+    }
+
+    emitPipelineEvent(pipelineId, 'completed', { totalCost, services: detectedServices });
     return;
   }
 
@@ -381,6 +393,31 @@ async function dispatchAgentStep(pipeline: Pipeline, step: PipelineStep): Promis
   emitPipelineEvent(pipeline.id, 'step_started', { stepId: step.id, label: step.label });
 
   try {
+    // Wait for devcontainer to be ready (it may still be building)
+    if (step.devcontainer_id) {
+      const { getDevcontainer } = await import('./devcontainers');
+      const maxWaitMs = 300000; // 5 minutes max
+      const pollIntervalMs = 3000;
+      const deadline = Date.now() + maxWaitMs;
+
+      while (Date.now() < deadline) {
+        const dc = getDevcontainer(step.devcontainer_id);
+        if (!dc) throw new Error('Devcontainer not found');
+        if (dc.status === 'running') break;
+        if (dc.status === 'error' || dc.status === 'stopped') {
+          throw new Error(`Devcontainer is ${dc.status}: ${dc.error_message ?? 'unknown error'}`);
+        }
+        // Still creating/pending — wait and poll again
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+      }
+
+      // Final check after loop
+      const dc = getDevcontainer(step.devcontainer_id);
+      if (dc && dc.status !== 'running') {
+        throw new Error(`Devcontainer not ready after ${maxWaitMs / 1000}s (status: ${dc.status})`);
+      }
+    }
+
     const prompt = buildStepPrompt(pipeline, step);
 
     const taskId = await claudeDispatch({
