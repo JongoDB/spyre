@@ -15,6 +15,7 @@
 	import PipelineList from '$lib/components/PipelineList.svelte';
 	import PipelineBuilder from '$lib/components/PipelineBuilder.svelte';
 	import PipelineRunner from '$lib/components/PipelineRunner.svelte';
+	import AgentTaskActivity from '$lib/components/AgentTaskActivity.svelte';
 	import { addToast } from '$lib/stores/toast.svelte';
 	import type { Pipeline } from '$lib/types/pipeline';
 
@@ -99,6 +100,8 @@
 	let dcDispatchId = $state('');
 	let dcDispatchPrompt = $state('');
 	let dcDispatching = $state(false);
+	let activeAgentTaskId = $state<string | null>(null);
+	let activeAgentDcId = $state<string | null>(null);
 
 	// Pipeline state
 	let pipelines = $state<PipelineListItem[]>(data.pipelines ?? []);
@@ -111,6 +114,19 @@
 			if (res.ok) devcontainers = await res.json();
 		} catch { /* ignore */ }
 	}
+
+	// Poll devcontainer status while any are in a transient state
+	let dcPollTimer: ReturnType<typeof setInterval> | null = null;
+	$effect(() => {
+		const hasTransient = devcontainers.some(d => d.status === 'creating' || d.status === 'removing');
+		if (hasTransient && !dcPollTimer) {
+			dcPollTimer = setInterval(refreshDevcontainers, 3000);
+		} else if (!hasTransient && dcPollTimer) {
+			clearInterval(dcPollTimer);
+			dcPollTimer = null;
+		}
+		return () => { if (dcPollTimer) { clearInterval(dcPollTimer); dcPollTimer = null; } };
+	});
 
 	async function addDevcontainer() {
 		if (!addAgentPersonaId || addingAgent) return;
@@ -173,8 +189,11 @@
 				body: JSON.stringify({ prompt: dcDispatchPrompt.trim() })
 			});
 			if (res.ok) {
+				const body = await res.json();
 				addToast('Task dispatched', 'success');
 				dcDispatchPrompt = '';
+				activeAgentTaskId = body.taskId;
+				activeAgentDcId = dcDispatchId;
 				dcDispatchId = '';
 				setTimeout(refreshClaudeData, 2000);
 			} else {
@@ -678,6 +697,27 @@
 								{dcDispatching ? 'Dispatching...' : 'Dispatch'}
 							</button>
 						</div>
+					</div>
+				{/if}
+
+				<!-- Live task activity -->
+				{#if activeAgentTaskId}
+					{@const activeDc = devcontainers.find(d => d.id === activeAgentDcId)}
+					<div class="active-task-section card">
+						<div class="dispatch-header">
+							<h3>
+								{#if activeDc}
+									{activeDc.persona_avatar ?? ''} {activeDc.persona_name ?? activeDc.service_name} — Active Task
+								{:else}
+									Active Task
+								{/if}
+							</h3>
+							<button class="btn btn-sm btn-secondary" onclick={() => { activeAgentTaskId = null; activeAgentDcId = null; }}>Dismiss</button>
+						</div>
+						<AgentTaskActivity
+							taskId={activeAgentTaskId}
+							onComplete={() => { refreshClaudeData(); }}
+						/>
 					</div>
 				{/if}
 
