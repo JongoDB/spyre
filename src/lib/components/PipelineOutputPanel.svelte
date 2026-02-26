@@ -67,6 +67,10 @@
 		return `/api/terminal/${envId}/download?path=${encodeURIComponent(path)}`;
 	}
 
+	function archiveUrl(dirPath: string): string {
+		return `/api/terminal/${envId}/download-archive?path=${encodeURIComponent(dirPath)}`;
+	}
+
 	function formatSize(bytes: number): string {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -159,7 +163,19 @@
 		</div>
 	{/if}
 
-	<!-- Section 3: File Browser (collapsible) -->
+	<!-- Section 3: Download Project Archive -->
+	{#if artifacts?.projectDir}
+		<div class="output-section archive-section">
+			<a href={archiveUrl(artifacts.projectDir)} class="archive-btn">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+				<span>Download Project</span>
+				<code class="archive-path">{artifacts.projectDir}</code>
+				<span class="archive-format">.tar.gz</span>
+			</a>
+		</div>
+	{/if}
+
+	<!-- Section 4: File Browser (collapsible) -->
 	{#if artifacts}
 		<div class="output-section browser-section">
 			<button class="browser-toggle" onclick={toggleFileBrowser}>
@@ -172,12 +188,18 @@
 				<div class="browser-content">
 					<!-- Breadcrumbs -->
 					<div class="browser-breadcrumbs">
-						{#each breadcrumbs() as crumb, i (crumb.path)}
-							{#if i > 0}<span class="breadcrumb-sep">/</span>{/if}
-							<button class="breadcrumb-btn" onclick={() => loadDirectory(crumb.path)}>
-								{crumb.label}
-							</button>
-						{/each}
+						<div class="breadcrumb-path">
+							{#each breadcrumbs() as crumb, i (crumb.path)}
+								{#if i > 0}<span class="breadcrumb-sep">/</span>{/if}
+								<button class="breadcrumb-btn" onclick={() => loadDirectory(crumb.path)}>
+									{crumb.label}
+								</button>
+							{/each}
+						</div>
+						<a href={archiveUrl(browserPath)} class="browser-download-folder" title="Download this folder as .tar.gz">
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+							<span>.tar.gz</span>
+						</a>
 					</div>
 
 					{#if browserLoading}
@@ -222,7 +244,7 @@
 		</div>
 	{/if}
 
-	<!-- Section 4: Rescan / No outputs state -->
+	<!-- Section 5: Rescan / No outputs state -->
 	<div class="output-actions">
 		{#if !hasOutputs && artifacts}
 			<div class="no-outputs">
@@ -318,6 +340,28 @@
 	}
 	.file-download:hover { color: var(--accent); }
 
+	/* Archive download */
+	.archive-btn {
+		display: flex; align-items: center; gap: 8px;
+		padding: 10px 14px; border-radius: var(--radius-sm);
+		background: rgba(34,197,94,0.06); border: 1px solid rgba(34,197,94,0.2);
+		text-decoration: none; color: var(--text-primary);
+		font-size: 0.8125rem; font-weight: 500;
+		transition: background 0.15s, border-color 0.15s;
+	}
+	.archive-btn:hover {
+		background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35);
+	}
+	.archive-btn svg { color: var(--success); flex-shrink: 0; }
+	.archive-path {
+		font-size: 0.6875rem; font-family: 'SF Mono', monospace;
+		color: var(--text-secondary); margin-left: auto;
+	}
+	.archive-format {
+		font-size: 0.625rem; font-weight: 700; color: var(--text-secondary);
+		background: var(--bg-tertiary); padding: 1px 6px; border-radius: 4px;
+	}
+
 	/* File Browser */
 	.browser-toggle {
 		display: flex; align-items: center; gap: 8px; width: 100%;
@@ -336,9 +380,21 @@
 		background: var(--bg-secondary);
 	}
 	.browser-breadcrumbs {
-		display: flex; align-items: center; gap: 2px;
+		display: flex; align-items: center; gap: 8px;
 		padding: 8px 12px; font-size: 0.75rem;
 		border-bottom: 1px solid var(--border); overflow-x: auto;
+	}
+	.breadcrumb-path { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+	.browser-download-folder {
+		display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+		color: var(--text-secondary); font-size: 0.6875rem;
+		text-decoration: none; padding: 2px 8px;
+		border-radius: var(--radius-sm); transition: color 0.15s, background 0.15s;
+		border: 1px solid transparent;
+	}
+	.browser-download-folder:hover {
+		color: var(--success); background: rgba(34,197,94,0.06);
+		border-color: rgba(34,197,94,0.2);
 	}
 	.breadcrumb-btn {
 		background: none; border: none; color: var(--accent); cursor: pointer;
