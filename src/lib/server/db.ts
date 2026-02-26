@@ -2,8 +2,10 @@ import Database from 'better-sqlite3';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { getEnvConfig } from './env-config';
+import { seedDefaultPersonas } from './personas';
 
 let _db: Database.Database | null = null;
+let _needsSeed = false;
 
 function applyMigrations(db: Database.Database): void {
   // Add template_id column to environments if missing
@@ -541,12 +543,20 @@ function initializeDb(): Database.Database {
   // Run migrations for existing databases
   applyMigrations(db);
 
+  // Seed default personas on first run — must happen after _db is set
+  // so we defer it via a flag and call it in getDb() instead.
+  _needsSeed = true;
+
   return db;
 }
 
 export function getDb(): Database.Database {
   if (!_db) {
     _db = initializeDb();
+  }
+  if (_needsSeed) {
+    _needsSeed = false;
+    seedDefaultPersonas();
   }
   return _db;
 }
