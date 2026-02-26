@@ -16,10 +16,13 @@
 		expandedTask = expandedTask === taskId ? null : taskId;
 	}
 
+	/** Ensure SQLite UTC datetimes (no Z suffix) are parsed as UTC */
+	function utc(d: string): Date { return new Date(d.endsWith('Z') ? d : d + 'Z'); }
+
 	function formatDuration(start: string | null, end: string | null): string {
 		if (!start) return '-';
-		const startDate = new Date(start);
-		const endDate = end ? new Date(end) : new Date();
+		const startDate = utc(start);
+		const endDate = end ? utc(end) : new Date();
 		const ms = endDate.getTime() - startDate.getTime();
 		const seconds = Math.floor(ms / 1000);
 		if (seconds < 60) return `${seconds}s`;

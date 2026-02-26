@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import type { PipelineWithSteps, PipelineStepWithContext } from '$lib/types/pipeline';
 	import PipelineGateReview from './PipelineGateReview.svelte';
 	import PipelineStepActivity from './PipelineStepActivity.svelte';
@@ -64,14 +64,15 @@
 	});
 
 	// Auto-expand running and waiting steps
+	// Use untrack() on expandedSteps to avoid read+write infinite loop
 	$effect(() => {
-		if (pipeline?.steps) {
-			const activeIds = pipeline.steps
-				.filter(s => s.status === 'running' || s.status === 'waiting')
-				.map(s => s.id);
-			if (activeIds.length > 0) {
-				expandedSteps = new Set([...expandedSteps, ...activeIds]);
-			}
+		if (!pipeline?.steps) return;
+		const activeIds = pipeline.steps
+			.filter(s => s.status === 'running' || s.status === 'waiting')
+			.map(s => s.id);
+		if (activeIds.length > 0) {
+			const current = untrack(() => expandedSteps);
+			expandedSteps = new Set([...current, ...activeIds]);
 		}
 	});
 
@@ -124,7 +125,7 @@
 		if (pipelineTimerInterval) return;
 		pipelineTimerInterval = setInterval(() => {
 			if (pipeline?.started_at) {
-				pipelineElapsed = Math.floor((Date.now() - new Date(pipeline.started_at).getTime()) / 1000);
+				pipelineElapsed = Math.floor((Date.now() - parseUtc(pipeline.started_at).getTime()) / 1000);
 			}
 		}, 1000);
 	}
@@ -144,7 +145,7 @@
 			stopPipelineTimer();
 			if (pipeline?.started_at && pipeline?.completed_at) {
 				pipelineElapsed = Math.floor(
-					(new Date(pipeline.completed_at).getTime() - new Date(pipeline.started_at).getTime()) / 1000
+					(parseUtc(pipeline.completed_at).getTime() - parseUtc(pipeline.started_at).getTime()) / 1000
 				);
 			}
 		}
@@ -315,10 +316,15 @@
 		return `${hr}h ${min % 60}m`;
 	}
 
+	/** Ensure SQLite UTC datetimes (no Z suffix) are parsed correctly */
+	function parseUtc(d: string): Date {
+		return new Date(d.endsWith('Z') ? d : d + 'Z');
+	}
+
 	function formatDuration(start: string | null, end: string | null): string {
 		if (!start) return '';
-		const s = new Date(start);
-		const e = end ? new Date(end) : new Date();
+		const s = parseUtc(start);
+		const e = end ? parseUtc(end) : new Date();
 		const ms = e.getTime() - s.getTime();
 		const sec = Math.floor(ms / 1000);
 		if (sec < 60) return `${sec}s`;
