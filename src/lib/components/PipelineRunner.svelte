@@ -174,6 +174,7 @@
 		eventSource = null;
 		stopPipelineTimer();
 		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+		if (stepTimerInterval) { clearInterval(stepTimerInterval); stepTimerInterval = null; }
 	});
 
 	function toggleStep(stepId: string) {
@@ -339,6 +340,42 @@
 		if (type.includes('gate') || type.includes('paused')) return 'var(--warning)';
 		return 'var(--text-secondary)';
 	}
+
+	// === Active step banner ===
+	const activeSteps = $derived(() => {
+		if (!pipeline?.steps) return [];
+		return pipeline.steps.filter(s => s.status === 'running' || s.status === 'waiting');
+	});
+
+	// Live-ticking elapsed time for running steps
+	let stepElapsedMap = $state<Record<string, number>>({});
+	let stepTimerInterval: ReturnType<typeof setInterval> | null = null;
+
+	$effect(() => {
+		const active = activeSteps();
+		const hasRunning = active.some(s => s.status === 'running');
+		if (hasRunning && !stepTimerInterval) {
+			stepTimerInterval = setInterval(() => {
+				const map: Record<string, number> = {};
+				for (const s of activeSteps()) {
+					if (s.started_at) {
+						map[s.id] = Math.floor((Date.now() - parseUtc(s.started_at).getTime()) / 1000);
+					}
+				}
+				stepElapsedMap = map;
+			}, 1000);
+		} else if (!hasRunning && stepTimerInterval) {
+			clearInterval(stepTimerInterval);
+			stepTimerInterval = null;
+		}
+	});
+
+	// Auto-show event log when pipeline is active
+	$effect(() => {
+		if ((pipeline?.status === 'running' || pipeline?.status === 'paused') && eventLog.length > 0) {
+			showEventLog = true;
+		}
+	});
 </script>
 
 {#if loading}
@@ -411,6 +448,82 @@
 			</div>
 		{/if}
 
+		<!-- Completion summary — visible when pipeline finishes -->
+		{#if pipeline.status === 'completed' || pipeline.status === 'failed' || pipeline.status === 'cancelled'}
+			<div class="completion-summary" class:success={pipeline.status === 'completed'} class:failure={pipeline.status === 'failed'}>
+				<div class="completion-header">
+					<span class="completion-icon">
+						{#if pipeline.status === 'completed'}
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+						{:else if pipeline.status === 'failed'}
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+						{:else}
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+						{/if}
+					</span>
+					<div class="completion-title">
+						<strong>Pipeline {pipeline.status}</strong>
+						<span class="completion-stats">
+							{formatElapsed(pipelineElapsed)}
+							{#if pipeline.total_cost_usd > 0}
+								&middot; ${pipeline.total_cost_usd.toFixed(4)}
+							{/if}
+							&middot; {progressStats().completed}/{progressStats().total} steps
+						</span>
+					</div>
+				</div>
+				{#each pipeline.steps.filter(s => s.result_summary && s.status === 'completed') as step (step.id)}
+					<div class="completion-step">
+						<div class="completion-step-header">
+							<span class="completion-step-badge" class:gate={step.type === 'gate'}>{step.type}</span>
+							<span class="completion-step-label">{step.label}</span>
+							{#if step.cost_usd}
+								<span class="completion-step-cost">${step.cost_usd.toFixed(4)}</span>
+							{/if}
+						</div>
+						<pre class="completion-step-result">{step.result_summary}</pre>
+					</div>
+				{/each}
+				<div class="completion-hint">
+					Check the environment terminal for file changes, or review git log for commits made during the pipeline.
+				</div>
+			</div>
+		{/if}
+
+		<!-- Active step banner — prominent "what's happening now" -->
+		{#if activeSteps().length > 0}
+			<div class="active-banner">
+				{#each activeSteps() as astep (astep.id)}
+					<div class="active-banner-item" class:gate={astep.status === 'waiting'}>
+						<div class="active-banner-indicator">
+							{#if astep.status === 'running'}
+								<div class="active-spinner"></div>
+							{:else}
+								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+							{/if}
+						</div>
+						<div class="active-banner-text">
+							<span class="active-banner-label">
+								{#if astep.status === 'running'}
+									Running: <strong>{astep.label}</strong>
+								{:else}
+									Waiting for review: <strong>{astep.label}</strong>
+								{/if}
+							</span>
+							<span class="active-banner-meta">
+								{#if astep.persona_name}
+									{astep.persona_avatar ?? ''} {astep.persona_name}
+								{/if}
+								{#if astep.status === 'running' && stepElapsedMap[astep.id] != null}
+									<span class="active-elapsed">{formatElapsed(stepElapsedMap[astep.id])}</span>
+								{/if}
+							</span>
+						</div>
+					</div>
+				{/each}
+			</div>
+		{/if}
+
 		{#if pipeline.error_message}
 			<div class="error-bar">{pipeline.error_message}</div>
 		{/if}
@@ -459,7 +572,9 @@
 											{#if step.cost_usd}
 												<span class="step-cost">${step.cost_usd.toFixed(4)}</span>
 											{/if}
-											{#if step.started_at}
+											{#if step.status === 'running' && stepElapsedMap[step.id] != null}
+												<span class="step-duration live">{formatElapsed(stepElapsedMap[step.id])}</span>
+											{:else if step.started_at}
 												<span class="step-duration">{formatDuration(step.started_at, step.completed_at)}</span>
 											{/if}
 											{#if step.iteration > 0}
@@ -595,6 +710,95 @@
 	.progress-tag.running { background: rgba(99,102,241,0.1); color: var(--accent); }
 	.progress-tag.waiting { background: rgba(245,158,11,0.1); color: var(--warning); }
 	.progress-tag.failed { background: rgba(239,68,68,0.1); color: var(--error); }
+
+	/* Completion summary */
+	.completion-summary {
+		display: flex; flex-direction: column; gap: 10px;
+		padding: 16px; border-radius: var(--radius-sm);
+		border: 1px solid var(--border); background: var(--bg-secondary);
+	}
+	.completion-summary.success { border-color: rgba(34,197,94,0.3); background: rgba(34,197,94,0.04); }
+	.completion-summary.failure { border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.04); }
+	.completion-header {
+		display: flex; align-items: center; gap: 10px;
+	}
+	.completion-icon { flex-shrink: 0; display: flex; align-items: center; }
+	.completion-summary.success .completion-icon { color: var(--success); }
+	.completion-summary.failure .completion-icon { color: var(--error); }
+	.completion-title { display: flex; flex-direction: column; gap: 2px; }
+	.completion-title strong { font-size: 0.875rem; }
+	.completion-stats { font-size: 0.75rem; color: var(--text-secondary); font-family: 'SF Mono', monospace; }
+	.completion-step {
+		display: flex; flex-direction: column; gap: 4px;
+		padding: 10px 12px; background: rgba(0,0,0,0.15); border-radius: var(--radius-sm);
+	}
+	.completion-step-header {
+		display: flex; align-items: center; gap: 8px;
+	}
+	.completion-step-badge {
+		font-size: 0.5625rem; font-weight: 700; text-transform: uppercase;
+		padding: 1px 5px; border-radius: 3px; letter-spacing: 0.04em;
+		background: rgba(99,102,241,0.12); color: var(--accent);
+	}
+	.completion-step-badge.gate { background: rgba(245,158,11,0.12); color: var(--warning); }
+	.completion-step-label { font-size: 0.8125rem; font-weight: 500; }
+	.completion-step-cost { margin-left: auto; font-size: 0.6875rem; font-family: 'SF Mono', monospace; color: var(--text-secondary); }
+	.completion-step-result {
+		font-size: 0.75rem; font-family: 'SF Mono', monospace;
+		white-space: pre-wrap; word-break: break-word;
+		color: var(--text-secondary); margin: 0; line-height: 1.5;
+		max-height: 150px; overflow-y: auto;
+	}
+	.completion-hint {
+		font-size: 0.75rem; color: var(--text-secondary); font-style: italic;
+		padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05);
+	}
+
+	/* Active step banner */
+	.active-banner {
+		display: flex; flex-direction: column; gap: 6px;
+	}
+	.active-banner-item {
+		display: flex; align-items: center; gap: 12px;
+		padding: 12px 16px; border-radius: var(--radius-sm);
+		background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.2);
+	}
+	.active-banner-item.gate {
+		background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.2);
+	}
+	.active-banner-indicator {
+		flex-shrink: 0; width: 20px; height: 20px;
+		display: flex; align-items: center; justify-content: center;
+		color: var(--warning);
+	}
+	.active-banner-item:not(.gate) .active-banner-indicator { color: var(--accent); }
+	.active-spinner {
+		width: 16px; height: 16px; border-radius: 50%;
+		border: 2px solid rgba(99,102,241,0.2); border-top-color: var(--accent);
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin { to { transform: rotate(360deg); } }
+	.active-banner-text {
+		display: flex; flex-direction: column; gap: 2px;
+	}
+	.active-banner-label {
+		font-size: 0.8125rem; color: var(--text-primary);
+	}
+	.active-banner-label strong { font-weight: 600; }
+	.active-banner-meta {
+		font-size: 0.75rem; color: var(--text-secondary);
+		display: flex; align-items: center; gap: 10px;
+	}
+	.active-elapsed {
+		font-family: 'SF Mono', monospace; font-size: 0.6875rem;
+		background: rgba(99,102,241,0.1); padding: 1px 6px;
+		border-radius: 3px; color: var(--accent);
+	}
+
+	.step-duration.live {
+		color: var(--accent); font-weight: 600;
+		font-family: 'SF Mono', monospace;
+	}
 
 	.error-bar {
 		padding: 10px 16px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
