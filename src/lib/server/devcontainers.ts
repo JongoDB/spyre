@@ -281,7 +281,7 @@ async function writeDevcontainerFiles(
 /**
  * Copy controller's Claude credentials into a devcontainer.
  */
-async function propagateClaudeAuthToDevcontainer(
+export async function propagateClaudeAuthToDevcontainer(
   envId: string,
   containerName: string
 ): Promise<void> {
@@ -299,21 +299,23 @@ async function propagateClaudeAuthToDevcontainer(
   const credentials = readFileSync(authPath, 'utf-8');
   try { JSON.parse(credentials); } catch { return; }
 
-  // Create .claude dir and write credentials inside the devcontainer
+  // Create .claude dir and write credentials inside the devcontainer.
+  // Use -u root because Docker named volumes mount as root-owned;
+  // spyre user can't write until we chown.
   const cmds = [
-    `docker exec ${containerName} mkdir -p /home/spyre/.claude`,
-    `docker exec ${containerName} bash -c 'cat > /home/spyre/.claude/.credentials.json << CREDS_EOF\n${credentials}\nCREDS_EOF'`,
-    `docker exec ${containerName} chmod 600 /home/spyre/.claude/.credentials.json`,
-    `docker exec ${containerName} chown -R spyre:spyre /home/spyre/.claude`,
+    `docker exec -u root ${containerName} mkdir -p /home/spyre/.claude`,
+    `docker exec -u root ${containerName} bash -c 'cat > /home/spyre/.claude/.credentials.json << CREDS_EOF\n${credentials}\nCREDS_EOF'`,
+    `docker exec -u root ${containerName} chmod 600 /home/spyre/.claude/.credentials.json`,
+    `docker exec -u root ${containerName} chown -R spyre:spyre /home/spyre/.claude`,
   ];
 
   for (const cmd of cmds) {
     await envExec(envId, cmd, 10000);
   }
 
-  // Seed .claude.json to skip onboarding
+  // Seed .claude.json to skip onboarding (run as root, then chown)
   await envExec(envId,
-    `docker exec ${containerName} bash -c 'node -e "` +
+    `docker exec -u root ${containerName} bash -c 'node -e "` +
     `const fs = require(\\\"fs\\\");` +
     `const p = \\\"/home/spyre/.claude.json\\\";` +
     `let c = {};` +
@@ -325,7 +327,7 @@ async function propagateClaudeAuthToDevcontainer(
     10000
   );
   await envExec(envId,
-    `docker exec ${containerName} chown spyre:spyre /home/spyre/.claude.json`,
+    `docker exec -u root ${containerName} chown spyre:spyre /home/spyre/.claude.json`,
     10000
   );
 
@@ -345,12 +347,14 @@ async function propagateGitHubAuthToDevcontainer(
 
   const gitUser = personaName ? personaName.toLowerCase().replace(/\s+/g, '-') : 'spyre-agent';
   const cmds = [
+    // git config runs as spyre (writes to ~spyre/.gitconfig)
     `docker exec -u spyre ${containerName} git config --global user.name "${gitUser}"`,
     `docker exec -u spyre ${containerName} git config --global user.email "${gitUser}@spyre.local"`,
-    `docker exec ${containerName} mkdir -p /home/spyre/.config/gh`,
-    `docker exec ${containerName} bash -c 'cat > /home/spyre/.config/gh/hosts.yml << GH_EOF\ngithub.com:\n  oauth_token: ${token}\n  git_protocol: https\nGH_EOF'`,
-    `docker exec ${containerName} chmod 600 /home/spyre/.config/gh/hosts.yml`,
-    `docker exec ${containerName} chown -R spyre:spyre /home/spyre/.config`,
+    // Volume mount is root-owned — use root for file writes, then chown
+    `docker exec -u root ${containerName} mkdir -p /home/spyre/.config/gh`,
+    `docker exec -u root ${containerName} bash -c 'cat > /home/spyre/.config/gh/hosts.yml << GH_EOF\ngithub.com:\n  oauth_token: ${token}\n  git_protocol: https\nGH_EOF'`,
+    `docker exec -u root ${containerName} chmod 600 /home/spyre/.config/gh/hosts.yml`,
+    `docker exec -u root ${containerName} chown -R spyre:spyre /home/spyre/.config`,
     `docker exec -u spyre ${containerName} git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${token}"; }; f'`,
   ];
 
@@ -407,7 +411,7 @@ async function writePersonaClaudeMd(
   parts.push('Update `current_task` and phase statuses as you work.');
 
   const content = parts.join('\n');
-  const cmd = `docker exec ${containerName} bash -c 'mkdir -p /home/spyre/.claude && cat > /home/spyre/.claude/CLAUDE.md << PERSONA_EOF\n${content}\nPERSONA_EOF && chown -R spyre:spyre /home/spyre/.claude'`;
+  const cmd = `docker exec -u root ${containerName} bash -c 'mkdir -p /home/spyre/.claude && cat > /home/spyre/.claude/CLAUDE.md << PERSONA_EOF\n${content}\nPERSONA_EOF && chown -R spyre:spyre /home/spyre/.claude'`;
   await envExec(envId, cmd, 10000);
 }
 

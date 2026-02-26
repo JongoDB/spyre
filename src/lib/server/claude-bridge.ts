@@ -919,6 +919,18 @@ async function executeDevcontainerTask(
     const dc = getDevcontainerWithPersona(devcontainerId);
     if (!dc) throw new Error(`Devcontainer ${devcontainerId} not found`);
 
+    // Pre-dispatch: ensure fresh token and propagate to devcontainer
+    try {
+      const { ensureFreshToken } = await import('./claude-auth');
+      await ensureFreshToken();
+      const { propagateClaudeAuthToDevcontainer } = await import('./devcontainers');
+      await propagateClaudeAuthToDevcontainer(envId, dc.container_name);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[spyre] Pre-dispatch auth propagation to devcontainer failed: ${msg}`);
+      // Don't abort — credentials may already be valid inside the container
+    }
+
     // Build framed prompt with devcontainer persona context
     const env = getEnvironment(envId);
     const persona = dc.persona_id ? getPersona(dc.persona_id) ?? null : null;
