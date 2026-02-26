@@ -58,14 +58,26 @@ export const load: PageServerLoad = async ({ params }) => {
     ? getProvisioningProgress(params.id)
     : null;
 
-  // Look up persona if assigned
+  // Look up persona(s) assigned to this environment
   const persona = env.persona_id ? getPersona(env.persona_id) ?? null : null;
+
+  // Parse persona_ids array and resolve all assigned personas
+  let assignedPersonas: Array<{ id: string; name: string; avatar: string; role: string }> = [];
+  if (env.persona_ids) {
+    try {
+      const ids: string[] = JSON.parse(env.persona_ids);
+      assignedPersonas = ids
+        .map(id => getPersona(id))
+        .filter((p): p is NonNullable<typeof p> => p !== null && p !== undefined)
+        .map(p => ({ id: p.id, name: p.name, avatar: p.avatar, role: p.role }));
+    } catch { /* invalid JSON, ignore */ }
+  }
 
   // Load devcontainers for docker-enabled environments
   const devcontainers = env.docker_enabled ? listDevcontainers(env.id) : [];
 
-  // Load personas list for docker-enabled environments (needed for "Add Agent" form)
-  const personas = env.docker_enabled ? listPersonas() : [];
+  // Load personas list (needed for "Add Agent" form and persona display)
+  const personas = listPersonas();
 
   // Load pipelines for docker-enabled environments
   const pipelines = env.docker_enabled ? listPipelines(env.id) : [];
@@ -75,6 +87,7 @@ export const load: PageServerLoad = async ({ params }) => {
     metadata,
     provisioningProgress,
     persona,
+    assignedPersonas,
     devcontainers,
     personas,
     pipelines,

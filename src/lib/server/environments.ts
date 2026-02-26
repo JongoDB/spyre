@@ -753,6 +753,35 @@ async function createViaCommunityScript(
     }
   }
 
+  // Auto-create devcontainers for selected personas (docker multi-agent mode)
+  if (req.docker_enabled && req.persona_ids?.length) {
+    logProvisioningStep(id, 'agents', 'running', `Creating ${req.persona_ids.length} agent(s)...`);
+    broadcastProvisioningEvent(id, { phase: 'agents', step: `Creating ${req.persona_ids.length} agent(s)...`, status: 'running' });
+
+    // Update status to running first so createDevcontainer can proceed
+    db.prepare(`
+      UPDATE environments
+      SET status = 'running', ip_address = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(ipAddress, id);
+
+    const { createDevcontainer } = await import('./devcontainers');
+    let created = 0;
+    for (const personaId of req.persona_ids) {
+      try {
+        await createDevcontainer({ env_id: id, persona_id: personaId });
+        created++;
+      } catch (dcErr) {
+        console.warn(`[spyre] Failed to create devcontainer for persona ${personaId}:`, dcErr);
+      }
+    }
+    const msg = `Created ${created}/${req.persona_ids.length} agent(s).`;
+    logProvisioningStep(id, 'agents', created > 0 ? 'success' : 'error', msg);
+    broadcastProvisioningEvent(id, { phase: 'agents', step: msg, status: created > 0 ? 'success' : 'error' });
+
+    return getEnvironment(id) as Environment;
+  }
+
   // Update environment status
   db.prepare(`
     UPDATE environments

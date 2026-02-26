@@ -821,7 +821,15 @@
 				<div class="claude-card card">
 					<div class="dispatch-header">
 						<h3>Dispatch Task</h3>
-						{#if data.persona}
+						{#if (data.assignedPersonas ?? []).length > 0}
+							<div class="persona-badges">
+								{#each data.assignedPersonas ?? [] as p (p.id)}
+									<span class="persona-badge" title="{p.name} — {p.role}">
+										{p.avatar} {p.role}
+									</span>
+								{/each}
+							</div>
+						{:else if data.persona}
 							<span class="persona-badge" title="{data.persona.name} — {data.persona.role}">
 								{data.persona.avatar} {data.persona.role}
 							</span>
@@ -1277,6 +1285,11 @@
 		margin-bottom: 4px;
 	}
 	.dispatch-header h3 { margin-bottom: 0; }
+	.persona-badges {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
 	.persona-badge {
 		font-size: 0.75rem;
 		padding: 2px 10px;
