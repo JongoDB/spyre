@@ -396,7 +396,30 @@ async function advancePipeline(pipelineId: string): Promise<void> {
       console.warn(`[spyre] Service detection after pipeline completion failed:`, err);
     }
 
-    emitPipelineEvent(pipelineId, 'completed', { totalCost, services: detectedServices });
+    // Collect output files from result summaries
+    const env = getEnvironment(pipeline.env_id);
+    let outputFiles: Array<{ path: string; filename: string; size: number }> = [];
+    try {
+      const completedSteps = allSteps.filter(s => s.status === 'completed' && s.result_summary);
+      const summaries = completedSteps.map(s => s.result_summary!);
+      const { extractFilePaths, verifyFilesExist } = await import('./output-extractor');
+      const candidates = extractFilePaths(summaries, env?.project_dir ?? '/project');
+      if (candidates.length > 0) {
+        outputFiles = await verifyFilesExist(pipeline.env_id, env?.project_dir ?? '/project', candidates);
+      }
+    } catch { /* non-critical */ }
+
+    // Cache artifacts snapshot
+    const artifacts = {
+      services: detectedServices,
+      files: outputFiles,
+      projectDir: env?.project_dir ?? '/project',
+      scannedAt: new Date().toISOString()
+    };
+    db.prepare('UPDATE pipelines SET output_artifacts = ? WHERE id = ?')
+      .run(JSON.stringify(artifacts), pipelineId);
+
+    emitPipelineEvent(pipelineId, 'completed', { totalCost, services: detectedServices, files: outputFiles, artifacts });
     return;
   }
 

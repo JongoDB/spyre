@@ -1,3 +1,10 @@
+export interface PipelineOutputArtifacts {
+  services: Array<{ port: number; name: string }>;
+  files: Array<{ path: string; filename: string; size: number }>;
+  projectDir: string;
+  scannedAt: string;
+}
+
 export interface Pipeline {
   id: string;
   env_id: string;
@@ -11,6 +18,7 @@ export interface Pipeline {
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
+  output_artifacts: string | null;
   created_at: string;
   updated_at: string;
 }

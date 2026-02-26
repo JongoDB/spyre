@@ -623,6 +623,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
     error_message    TEXT,
     started_at       TEXT,
     completed_at     TEXT,
+    output_artifacts TEXT,                                    -- JSON: cached output artifacts snapshot
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );

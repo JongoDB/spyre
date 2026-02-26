@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import type { PipelineWithSteps, PipelineStepWithContext } from '$lib/types/pipeline';
+	import type { PipelineWithSteps, PipelineStepWithContext, PipelineOutputArtifacts } from '$lib/types/pipeline';
 	import PipelineGateReview from './PipelineGateReview.svelte';
 	import PipelineStepActivity from './PipelineStepActivity.svelte';
+	import PipelineOutputPanel from './PipelineOutputPanel.svelte';
 	import { addToast } from '$lib/stores/toast.svelte';
 
 	interface Props {
@@ -25,6 +26,10 @@
 	// Detected services after pipeline completion
 	let detectedServices = $state<Array<{ port: number; name: string; status: string }>>([]);
 	let scanningServices = $state(false);
+
+	// Output artifacts
+	let outputArtifacts = $state<PipelineOutputArtifacts | null>(null);
+	let scanningOutputs = $state(false);
 
 	// Pipeline-level elapsed timer
 	let pipelineElapsed = $state(0);
@@ -87,10 +92,50 @@
 		} catch { /* ignore */ }
 		loading = false;
 
-		// Fetch services when pipeline is completed
+		// Load output artifacts when pipeline is completed
+		if (pipeline?.status === 'completed' && !outputArtifacts) {
+			await loadOutputArtifacts();
+		}
+		// Fetch services when pipeline is completed (fallback for older pipelines without artifacts)
 		if (pipeline?.status === 'completed' && detectedServices.length === 0) {
 			await fetchServices();
 		}
+	}
+
+	async function loadOutputArtifacts() {
+		if (!pipeline) return;
+		// First try to parse from the pipeline record itself (cached)
+		if (pipeline.output_artifacts) {
+			try {
+				outputArtifacts = JSON.parse(pipeline.output_artifacts);
+				return;
+			} catch { /* fall through to API */ }
+		}
+		// Fetch from API
+		try {
+			const res = await fetch(`/api/pipelines/${pipelineId}/outputs`);
+			if (res.ok) {
+				const data = await res.json();
+				if (data.artifacts) outputArtifacts = data.artifacts;
+			}
+		} catch { /* ignore */ }
+	}
+
+	async function rescanOutputs() {
+		if (scanningOutputs) return;
+		scanningOutputs = true;
+		try {
+			const res = await fetch(`/api/pipelines/${pipelineId}/outputs`, { method: 'POST' });
+			if (res.ok) {
+				const data = await res.json();
+				if (data.artifacts) outputArtifacts = data.artifacts;
+				// Also update detectedServices for backwards compat
+				if (data.services) {
+					detectedServices = data.services.filter((s: { status: string }) => s.status === 'up');
+				}
+			}
+		} catch { /* ignore */ }
+		finally { scanningOutputs = false; }
 	}
 
 	async function fetchServices() {
@@ -144,6 +189,11 @@
 				}
 
 				eventLog = [...eventLog, { time: new Date().toLocaleTimeString(), message, type }];
+
+				// Pre-populate artifacts from completed event before fetch completes
+				if (event === 'completed' && data.artifacts) {
+					outputArtifacts = data.artifacts;
+				}
 			} catch { /* ignore parse errors */ }
 
 			// Reload pipeline data on any event
@@ -559,7 +609,15 @@
 						<pre class="completion-step-result">{step.result_summary}</pre>
 					</div>
 				{/each}
-				{#if detectedServices.length > 0}
+				{#if pipeline.status === 'completed'}
+					<PipelineOutputPanel
+						envId={pipeline.env_id}
+						{pipelineId}
+						artifacts={outputArtifacts}
+						onRescan={rescanOutputs}
+						scanning={scanningOutputs}
+					/>
+				{:else if detectedServices.length > 0}
 					<div class="completion-services">
 						<span class="completion-services-title">Detected Services</span>
 						<div class="completion-services-list">
@@ -577,16 +635,7 @@
 							{/each}
 						</div>
 					</div>
-				{:else if pipeline.status === 'completed'}
-					<div class="completion-services">
-						<button class="btn btn-sm btn-secondary" onclick={scanServices} disabled={scanningServices}>
-							{scanningServices ? 'Scanning...' : 'Scan for Services'}
-						</button>
-					</div>
 				{/if}
-				<div class="completion-hint">
-					Check the environment terminal for file changes, or review git log for commits made during the pipeline.
-				</div>
 			</div>
 		{/if}
 
@@ -859,10 +908,6 @@
 		white-space: pre-wrap; word-break: break-word;
 		color: var(--text-secondary); margin: 0; line-height: 1.5;
 		max-height: 150px; overflow-y: auto;
-	}
-	.completion-hint {
-		font-size: 0.75rem; color: var(--text-secondary); font-style: italic;
-		padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05);
 	}
 	.completion-services {
 		display: flex; flex-direction: column; gap: 8px;

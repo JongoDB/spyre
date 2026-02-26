@@ -480,6 +480,11 @@ function applyMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE pipelines ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
   }
 
+  // output_artifacts column on pipelines
+  if (pipelineCols.length > 0 && !pipelineCols.some(c => c.name === 'output_artifacts')) {
+    db.exec('ALTER TABLE pipelines ADD COLUMN output_artifacts TEXT');
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {
