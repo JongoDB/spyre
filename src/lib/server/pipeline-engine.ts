@@ -414,6 +414,7 @@ async function advancePipeline(pipelineId: string): Promise<void> {
       services: detectedServices,
       files: outputFiles,
       projectDir: env?.project_dir ?? '/project',
+      projectName: env?.project_name ?? env?.name ?? 'project',
       scannedAt: new Date().toISOString()
     };
     db.prepare('UPDATE pipelines SET output_artifacts = ? WHERE id = ?')

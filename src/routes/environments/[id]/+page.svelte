@@ -549,6 +549,12 @@
 					<span class="info-label">Branch</span>
 					<span class="info-value"><code>{env.git_branch ?? 'main'}</code></span>
 				</div>
+				{#if env.project_name}
+					<div class="info-item">
+						<span class="info-label">Project</span>
+						<span class="info-value"><code>{env.project_name}</code></span>
+					</div>
+				{/if}
 			{/if}
 			{#if env.ip_address}
 				<div class="info-divider"></div>

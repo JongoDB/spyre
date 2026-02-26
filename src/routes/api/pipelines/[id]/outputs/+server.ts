@@ -70,6 +70,7 @@ export const POST: RequestHandler = async ({ params }) => {
     services: detectedServices,
     files: outputFiles,
     projectDir,
+    projectName: env.project_name ?? env.name ?? 'project',
     scannedAt: new Date().toISOString()
   };
 

@@ -33,8 +33,9 @@ export const GET: RequestHandler = async ({ params, url }) => {
 			});
 		});
 
-		// Derive archive filename from directory name
-		const dirName = dirPath.split('/').filter(Boolean).pop() ?? 'project';
+		// Derive archive filename: prefer ?name= param, fall back to directory name
+		const nameParam = url.searchParams.get('name');
+		const dirName = nameParam || dirPath.split('/').filter(Boolean).pop() || 'project';
 
 		// Build tar command excluding common heavyweight dirs
 		const excludes = [

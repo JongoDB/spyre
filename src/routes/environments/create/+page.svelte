@@ -42,6 +42,7 @@
 	let dockerEnabled = $state(false);
 	let repoUrl = $state('');
 	let gitBranch = $state('main');
+	let projectName = $state('');
 
 	// Auto-enable nesting when Docker mode is on; clear persona (assigned per-devcontainer)
 	$effect(() => {
@@ -147,7 +148,8 @@
 					persona_id: selectedPersonaId || undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
-					git_branch: gitBranch || undefined
+					git_branch: gitBranch || undefined,
+					project_name: projectName.trim() || undefined
 				})
 			});
 
@@ -193,7 +195,8 @@
 					persona_id: selectedPersonaId || undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
-					git_branch: gitBranch || undefined
+					git_branch: gitBranch || undefined,
+					project_name: projectName.trim() || undefined
 				})
 			});
 
@@ -244,7 +247,8 @@
 					persona_id: selectedPersonaId || undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
-					git_branch: gitBranch || undefined
+					git_branch: gitBranch || undefined,
+					project_name: projectName.trim() || undefined
 				})
 			});
 
@@ -281,7 +285,8 @@
 					persona_id: selectedPersonaId || undefined,
 					docker_enabled: dockerEnabled,
 					repo_url: repoUrl || undefined,
-					git_branch: gitBranch || undefined
+					git_branch: gitBranch || undefined,
+					project_name: projectName.trim() || undefined
 				})
 			});
 
@@ -494,6 +499,11 @@
 						<label for="git-branch-tpl" class="form-label">Git Branch</label>
 						<input id="git-branch-tpl" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
 					</div>
+					<div class="form-group">
+						<label for="project-name-tpl" class="form-label">Project Name</label>
+						<input id="project-name-tpl" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+						<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+					</div>
 				</div>
 			{/if}
 
@@ -655,6 +665,11 @@
 						<label for="git-branch-quick" class="form-label">Git Branch</label>
 						<input id="git-branch-quick" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
 					</div>
+					<div class="form-group">
+						<label for="project-name-quick" class="form-label">Project Name</label>
+						<input id="project-name-quick" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+						<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+					</div>
 				</div>
 			{/if}
 
@@ -815,6 +830,11 @@
 								<label for="git-branch-comm" class="form-label">Git Branch</label>
 								<input id="git-branch-comm" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
 							</div>
+							<div class="form-group">
+								<label for="project-name-comm" class="form-label">Project Name</label>
+								<input id="project-name-comm" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+								<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
+							</div>
 						</div>
 					{/if}
 
@@ -962,6 +982,11 @@
 					<div class="form-group">
 						<label for="git-branch-cfg" class="form-label">Git Branch</label>
 						<input id="git-branch-cfg" type="text" class="form-input" placeholder="main" bind:value={gitBranch} />
+					</div>
+					<div class="form-group">
+						<label for="project-name-cfg" class="form-label">Project Name</label>
+						<input id="project-name-cfg" type="text" class="form-input" placeholder="my-app" bind:value={projectName} />
+						<span class="form-hint">Name for your project. Used in downloads and UI. Defaults to environment name.</span>
 					</div>
 				</div>
 			{/if}

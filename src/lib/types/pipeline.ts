@@ -2,6 +2,7 @@ export interface PipelineOutputArtifacts {
   services: Array<{ port: number; name: string }>;
   files: Array<{ path: string; filename: string; size: number }>;
   projectDir: string;
+  projectName: string;
   scannedAt: string;
 }
 

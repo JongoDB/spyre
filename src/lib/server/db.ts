@@ -370,6 +370,9 @@ function applyMigrations(db: Database.Database): void {
   if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'project_dir')) {
     db.exec("ALTER TABLE environments ADD COLUMN project_dir TEXT DEFAULT '/project'");
   }
+  if (envColsDocker.length > 0 && !envColsDocker.some(c => c.name === 'project_name')) {
+    db.exec('ALTER TABLE environments ADD COLUMN project_name TEXT');
+  }
 
   // devcontainer_id on claude_tasks
   const taskColsDc = db.pragma('table_info(claude_tasks)') as Array<{ name: string }>;

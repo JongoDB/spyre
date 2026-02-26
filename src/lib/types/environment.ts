@@ -19,6 +19,7 @@ export interface Environment {
   repo_url: string | null;
   git_branch: string;
   project_dir: string;
+  project_name: string | null;
 }
 
 export interface Service {
@@ -63,4 +64,5 @@ export interface CreateEnvironmentRequest {
   repo_url?: string;
   git_branch?: string;
   project_dir?: string;
+  project_name?: string;
 }

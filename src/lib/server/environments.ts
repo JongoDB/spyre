@@ -790,15 +790,16 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
 
   // Insert pending environment into DB first
   db.prepare(`
-    INSERT INTO environments (id, name, type, status, node, ssh_user, metadata, persona_id, docker_enabled, repo_url, git_branch, project_dir)
-    VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO environments (id, name, type, status, node, ssh_user, metadata, persona_id, docker_enabled, repo_url, git_branch, project_dir, project_name)
+    VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, req.name, req.type, node, sshUser, JSON.stringify(metadata),
     req.persona_id ?? null,
     req.docker_enabled ? 1 : 0,
     req.repo_url ?? null,
     req.git_branch ?? 'main',
-    req.project_dir ?? '/project'
+    req.project_dir ?? '/project',
+    req.project_name ?? req.name
   );
 
   // Log initial provisioning step
