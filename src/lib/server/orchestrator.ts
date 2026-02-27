@@ -54,6 +54,7 @@ export async function startOrchestrator(opts: StartOrchestratorOptions): Promise
     : listPersonas();
 
   // Resolve environment context for the prompt
+  const env = getEnvironment(opts.envId);
   const envContext = env ? {
     projectDir: env.project_dir ?? undefined,
     repoUrl: env.repo_url ?? null,
@@ -73,7 +74,6 @@ export async function startOrchestrator(opts: StartOrchestratorOptions): Promise
   const mcpToken = generateMcpToken(opts.envId, `orch-${sessionId}`, 'orchestrator');
 
   // Build the MCP config for the orchestrator
-  const env = getEnvironment(opts.envId);
   const controllerUrl = getControllerUrl();
   const mcpConfig = {
     mcpServers: {
