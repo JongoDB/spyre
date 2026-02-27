@@ -75,16 +75,25 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<LightweightAg
     "UPDATE lightweight_agents SET status = 'spawning', spawned_at = ?, updated_at = ? WHERE id = ?"
   ).run(now, now, agentId);
 
-  // Build framed prompt
-  const framedPrompt = buildAgentPrompt(opts.taskPrompt, persona, opts.context);
+  // Resolve environment for project context
+  const env = getEnvironment(opts.envId);
+  const projectContext = env ? {
+    projectDir: env.project_dir ?? undefined,
+    repoUrl: env.repo_url ?? null,
+    gitBranch: env.git_branch ?? undefined,
+  } : null;
 
-  // Dispatch via claude-bridge
+  // Build framed prompt
+  const framedPrompt = buildAgentPrompt(opts.taskPrompt, persona, opts.context, projectContext);
+
+  // Dispatch via claude-bridge — run in project dir so CLAUDE.md is accessible
   try {
     const taskId = await claudeDispatch({
       envId: opts.envId,
       prompt: framedPrompt,
       model: model as 'haiku' | 'sonnet' | 'opus',
       lightweightAgentId: agentId,
+      workingDir: projectContext?.projectDir,
     });
 
     db.prepare(
@@ -332,7 +341,8 @@ function isTerminalStatus(status: string): boolean {
 function buildAgentPrompt(
   taskPrompt: string,
   persona: ReturnType<typeof getPersona> | null,
-  context?: Record<string, unknown> | null
+  context?: Record<string, unknown> | null,
+  projectContext?: { projectDir?: string; repoUrl?: string | null; gitBranch?: string } | null
 ): string {
   const parts: string[] = [];
 
@@ -340,12 +350,18 @@ function buildAgentPrompt(
     parts.push(`You are ${persona.name}, a ${persona.role}.`);
     parts.push('');
     if (persona.instructions.trim()) {
-      const brief = persona.instructions.length > 500
-        ? persona.instructions.slice(0, 500) + '...'
-        : persona.instructions;
-      parts.push(brief);
+      parts.push(persona.instructions);
       parts.push('');
     }
+  }
+
+  // Include project context if available
+  if (projectContext?.repoUrl || projectContext?.projectDir) {
+    parts.push('## Project Context');
+    parts.push(`- Project dir: ${projectContext.projectDir ?? '/project'}`);
+    parts.push(`- Repository: ${projectContext.repoUrl ?? 'local'}`);
+    parts.push(`- Branch: ${projectContext.gitBranch ?? 'main'}`);
+    parts.push('');
   }
 
   if (context && Object.keys(context).length > 0) {

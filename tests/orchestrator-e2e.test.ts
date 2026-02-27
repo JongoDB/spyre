@@ -21,14 +21,20 @@ test.beforeAll(async ({ request }) => {
 	console.log(`Using env: ${running.name} (${ENV_ID})`);
 });
 
-/** Navigate to env page, wait for hydration, click Orchestrator tab */
+/** Navigate to env page, wait for hydration, click Agents tab, then switch to Orchestrator mode */
 async function goToOrchestratorTab(page: import('@playwright/test').Page) {
 	await page.goto(`${BASE}/environments/${ENV_ID}`);
 	// Wait for Svelte hydration: the tab buttons become interactive
 	await page.waitForSelector('button.tab-btn', { state: 'attached' });
 	// Small delay for event handlers to be bound
 	await page.waitForTimeout(500);
-	await page.locator('button.tab-btn', { hasText: 'Orchestrator' }).click({ force: true });
+	await page.locator('button.tab-btn', { hasText: 'Agents' }).click({ force: true });
+	await page.waitForTimeout(300);
+	// Switch to orchestrator mode (may already be selected as default)
+	const orchPill = page.locator('button.mode-pill', { hasText: 'Orchestrator' });
+	if (await orchPill.isVisible()) {
+		await orchPill.click({ force: true });
+	}
 	await page.waitForTimeout(500);
 }
 
@@ -154,9 +160,9 @@ test.describe('Ask-User REST API', () => {
 // ------------------------------------------------------------------
 
 test.describe('Orchestrator Tab UI', () => {
-	test('tab button is visible on running environment page', async ({ page }) => {
+	test('Agents tab button is visible on running environment page', async ({ page }) => {
 		await page.goto(`${BASE}/environments/${ENV_ID}`);
-		await expect(page.locator('button.tab-btn', { hasText: 'Orchestrator' })).toBeVisible();
+		await expect(page.locator('button.tab-btn', { hasText: 'Agents' })).toBeVisible();
 	});
 
 	test('clicking Orchestrator tab shows launcher form', async ({ page }) => {

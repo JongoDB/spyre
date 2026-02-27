@@ -53,7 +53,14 @@ export async function startOrchestrator(opts: StartOrchestratorOptions): Promise
     ? opts.personaIds.map(id => getPersona(id)).filter((p): p is NonNullable<typeof p> => p != null)
     : listPersonas();
 
-  const systemPrompt = buildOrchestratorPrompt(opts.goal, personas);
+  // Resolve environment context for the prompt
+  const envContext = env ? {
+    projectDir: env.project_dir ?? undefined,
+    repoUrl: env.repo_url ?? null,
+    gitBranch: env.git_branch ?? undefined,
+  } : null;
+
+  const systemPrompt = buildOrchestratorPrompt(opts.goal, personas, envContext);
 
   // Create session record
   db.prepare(`
@@ -223,41 +230,66 @@ export function listSessions(envId: string): OrchestratorSession[] {
 
 function buildOrchestratorPrompt(
   goal: string,
-  personas: Array<{ name: string; role: string; description?: string | null; id: string }>
+  personas: Array<{ name: string; role: string; description?: string | null; instructions?: string; id: string }>,
+  envContext?: { projectDir?: string; repoUrl?: string | null; gitBranch?: string } | null
 ): string {
   const parts: string[] = [];
 
-  parts.push('You are an orchestrator managing a development project.');
+  parts.push('You are an orchestrator managing a development project. You coordinate specialized agents to accomplish complex goals efficiently.');
   parts.push('');
   parts.push('## Your Goal');
   parts.push(goal);
   parts.push('');
+
+  // Environment context
+  if (envContext?.repoUrl || envContext?.projectDir) {
+    parts.push('## Environment Context');
+    parts.push(`- Project directory: ${envContext.projectDir ?? '/project'}`);
+    parts.push(`- Repository: ${envContext.repoUrl ?? 'local'}`);
+    parts.push(`- Branch: ${envContext.gitBranch ?? 'main'}`);
+    parts.push('');
+  }
+
   parts.push('## Available Agent Personas');
   for (const p of personas) {
-    parts.push(`- ${p.name} (${p.role}): ${p.description ?? 'No description'} [persona_id: ${p.id}]`);
+    parts.push(`- **${p.name}** (${p.role}): ${p.description ?? 'No description'}`);
+    // Include brief expertise summary from instructions
+    if (p.instructions) {
+      const expertise = p.instructions.slice(0, 200).replace(/\n/g, ' ').trim();
+      parts.push(`  Expertise: ${expertise}${p.instructions.length > 200 ? '...' : ''}`);
+    }
+    parts.push(`  [persona_id: ${p.id}]`);
   }
   parts.push('');
   parts.push('## MCP Tools');
-  parts.push('- spyre_spawn_agent: Spawn an agent for a specific task');
-  parts.push('- spyre_spawn_agents: Spawn a wave of parallel agents');
-  parts.push('- spyre_wait_for_agents: Wait for agents to complete');
-  parts.push('- spyre_get_agent_status: Check an agent\'s result');
-  parts.push('- spyre_ask_user: Ask the human a question');
+  parts.push('- **spyre_spawn_agent**: Spawn a single agent. Params: name, role, task, persona_id, model, context');
+  parts.push('- **spyre_spawn_agents**: Spawn a wave of parallel agents. Params: wave_name, agents[]');
+  parts.push('- **spyre_wait_for_agents**: Block until specified agents complete. Params: agent_ids[], timeout_ms');
+  parts.push('- **spyre_get_agent_status**: Check an agent\'s current status and result. Params: agent_id');
+  parts.push('- **spyre_ask_user**: Ask the human operator a question. Params: question');
   parts.push('');
   parts.push('## Execution Pattern');
-  parts.push('1. Analyze the goal, break into parallel workstreams');
-  parts.push('2. Spawn Wave 1 for independent tasks (use spyre_spawn_agents)');
-  parts.push('3. Wait for Wave 1 (use spyre_wait_for_agents)');
-  parts.push('4. Review results, forward context to Wave 2');
-  parts.push('5. Continue until complete');
-  parts.push('6. Summarize accomplishments');
+  parts.push('1. **Analyze**: Decompose the goal into discrete, well-defined tasks. Identify dependencies between tasks.');
+  parts.push('2. **Plan waves**: Group independent tasks into parallel waves. Tasks with dependencies go in later waves.');
+  parts.push('3. **Spawn Wave 1**: Use spyre_spawn_agents for parallel tasks. Give each agent a clear, self-contained task description with all context it needs.');
+  parts.push('4. **Wait and review**: Use spyre_wait_for_agents. Examine each agent\'s output carefully — check for errors, incomplete work, or conflicts.');
+  parts.push('5. **Forward context**: Pass relevant outputs from completed agents to downstream agents via the context parameter. Be selective — only forward what the next agent needs.');
+  parts.push('6. **Iterate**: Continue spawning waves until the goal is complete. Adapt the plan based on intermediate results.');
+  parts.push('7. **Synthesize**: Write a clear summary of what was accomplished, any issues found, and remaining work if applicable.');
+  parts.push('');
+  parts.push('## Task Design Guidelines');
+  parts.push('- **Single-task goals**: If the goal is straightforward (one file, one function, one bug), use a single agent. Don\'t over-decompose.');
+  parts.push('- **Multi-task goals**: Break into the smallest independent units. Each agent should be able to work without blocking on another.');
+  parts.push('- **Context is critical**: Agents cannot see each other\'s work in real-time. Forward specific file paths, function signatures, or decision summaries — not vague references.');
+  parts.push('- **Persona matching**: Match personas to tasks based on their expertise. Use the Architect for design decisions, Backend for API/DB work, Frontend for UI, Tester for validation, Reviewer for code review, DevOps for infrastructure.');
+  parts.push('- **Model selection**: Use haiku for simple/routine tasks (file lookups, simple edits), sonnet for standard tasks (feature implementation, testing), opus for complex tasks (architecture, multi-file refactors, subtle bugs).');
   parts.push('');
   parts.push('## Rules');
-  parts.push('- Parallelize independent work (never serialize what can run concurrently)');
-  parts.push('- Forward relevant outputs from completed agents to downstream agents via context');
-  parts.push('- Use spyre_ask_user for ambiguous requirements');
-  parts.push('- Choose model per-agent: haiku for simple, sonnet for standard, opus for complex');
-  parts.push('- When spawning agents, use persona_id to give them specialized knowledge');
+  parts.push('- Parallelize independent work — never serialize what can run concurrently.');
+  parts.push('- Give each agent complete context. Agents run in isolation and cannot ask each other questions.');
+  parts.push('- Use spyre_ask_user when requirements are ambiguous — don\'t guess at user intent.');
+  parts.push('- If an agent fails or produces poor results, analyze why before retrying. Adjust the task description or persona.');
+  parts.push('- When spawning agents, always use persona_id to give them specialized knowledge and instructions.');
 
   return parts.join('\n');
 }

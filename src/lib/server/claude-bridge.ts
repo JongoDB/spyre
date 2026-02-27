@@ -486,6 +486,10 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
   }
 
   // Check no active task for this target (per-devcontainer or per-environment)
+  // Lightweight agents (orchestrator + sub-agents) bypass the one-task-per-env constraint
+  // because the whole point is multiple concurrent Claude processes in one env.
+  const isLightweight = !!(options.lightweightAgentId || options.mcpRole);
+
   if (devcontainerId) {
     // Devcontainer dispatch: only block if THIS devcontainer already has an active task
     const db = getDb();
@@ -495,8 +499,9 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
     if (dcTask) {
       throw { code: 'ALREADY_RUNNING', message: 'An active task is already running in this devcontainer' };
     }
-  } else {
-    // Bare env dispatch (no devcontainer): block if env has any non-devcontainer active task
+  } else if (!isLightweight) {
+    // Bare env dispatch (no devcontainer, no lightweight agent): block if env has a
+    // non-devcontainer, non-lightweight active task (i.e. the manual Claude tab task)
     const existing = getActiveTaskForEnv(envId);
     if (existing && (existing.status === 'running' || existing.status === 'pending') && !existing.devcontainer_id) {
       throw { code: 'ALREADY_RUNNING', message: 'An active task is already running in this environment' };
@@ -562,12 +567,8 @@ function buildFramedPrompt(
     parts.push(`You are ${persona.name}, a ${persona.role}.`);
     parts.push('');
 
-    // Include a brief reminder of instructions (CLAUDE.md has the full version)
     if (persona.instructions.trim()) {
-      const brief = persona.instructions.length > 500
-        ? persona.instructions.slice(0, 500) + '...'
-        : persona.instructions;
-      parts.push(brief);
+      parts.push(persona.instructions);
       parts.push('');
     }
   }

@@ -93,7 +93,8 @@
 	let claudeActiveTask = $state<ClaudeTask | null>(data.claude?.activeTask ?? null);
 	let claudeTaskHistory = $state<ClaudeTask[]>(data.claude?.taskHistory ?? []);
 	let claudeQueueItems = $state<ClaudeTaskQueueItem[]>((data.claude?.queueItems ?? []) as ClaudeTaskQueueItem[]);
-	let activeTab = $state<'terminal' | 'claude' | 'pipelines' | 'orchestrator'>('terminal');
+	let activeTab = $state<'terminal' | 'agents' | 'pipelines'>('terminal');
+	let agentMode = $state<'single' | 'orchestrator'>('orchestrator');
 
 	// Devcontainer state (docker multi-agent mode)
 	let devcontainers = $state<DevcontainerWithPersona[]>(data.devcontainers ?? []);
@@ -670,11 +671,10 @@
 	{#if env.status === 'running' && env.ip_address}
 		<div class="tab-switcher">
 			<button class="tab-btn" class:active={activeTab === 'terminal'} onclick={() => activeTab = 'terminal'}>Terminal</button>
-			<button class="tab-btn" class:active={activeTab === 'claude'} onclick={() => activeTab = 'claude'}>Claude</button>
+			<button class="tab-btn" class:active={activeTab === 'agents'} onclick={() => activeTab = 'agents'}>Agents</button>
 			{#if env.docker_enabled}
 				<button class="tab-btn" class:active={activeTab === 'pipelines'} onclick={() => activeTab = 'pipelines'}>Pipelines</button>
 			{/if}
-			<button class="tab-btn" class:active={activeTab === 'orchestrator'} onclick={() => activeTab = 'orchestrator'}>Orchestrator</button>
 		</div>
 	{/if}
 
@@ -683,194 +683,245 @@
 		<div class="terminal-section">
 			<TerminalTabs envId={env.id} />
 		</div>
-	{:else if env.status === 'running' && env.ip_address && activeTab === 'claude'}
+	{:else if env.status === 'running' && env.ip_address && activeTab === 'agents'}
 		<div class="claude-section">
-			{#if env.docker_enabled}
-				<!-- Docker Multi-Agent Mode -->
-				<div class="agent-header">
-					<h3>Agents</h3>
-					<button class="btn btn-primary btn-sm" onclick={() => showAddAgent = !showAddAgent}>
-						{showAddAgent ? 'Cancel' : '+ Add Agent'}
-					</button>
-				</div>
+			<!-- Agent mode switcher -->
+			<div class="agent-mode-switcher">
+				<button class="mode-pill" class:active={agentMode === 'single'} onclick={() => agentMode = 'single'}>Single Agent</button>
+				<button class="mode-pill" class:active={agentMode === 'orchestrator'} onclick={() => agentMode = 'orchestrator'}>Orchestrator</button>
+			</div>
 
-				{#if showAddAgent}
-					<div class="add-agent-form card">
-						<div class="form-group">
-							<label for="agent-persona">Persona</label>
-							<select id="agent-persona" class="form-select" bind:value={addAgentPersonaId}>
-								<option value="" disabled>Select a persona</option>
-								{#each data.personas ?? [] as p}
-									<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
-								{/each}
-							</select>
-						</div>
-						<button class="btn btn-primary btn-sm" disabled={!addAgentPersonaId || addingAgent} onclick={addDevcontainer}>
-							{addingAgent ? 'Creating...' : 'Create Agent'}
+			{#if agentMode === 'single'}
+				<p class="mode-hint">One Claude process for focused tasks — fix a bug, implement a feature, answer a question.</p>
+
+				{#if env.docker_enabled}
+					<!-- Docker Multi-Agent Mode -->
+					<div class="agent-header">
+						<h3>Agents</h3>
+						<button class="btn btn-primary btn-sm" onclick={() => showAddAgent = !showAddAgent}>
+							{showAddAgent ? 'Cancel' : '+ Add Agent'}
 						</button>
 					</div>
-				{/if}
 
-				{#if devcontainers.length > 0}
-					<div class="agent-grid">
-						{#each devcontainers as dc (dc.id)}
-							<div class="agent-card card">
-								<div class="agent-card-header">
-									<div class="agent-identity">
-										{#if dc.persona_avatar}
-											<span class="agent-avatar">{dc.persona_avatar}</span>
-										{/if}
-										<div>
-											<div class="agent-name">{dc.persona_name ?? dc.service_name}</div>
-											{#if dc.persona_role}
-												<div class="agent-role">{dc.persona_role}</div>
+					{#if showAddAgent}
+						<div class="add-agent-form card">
+							<div class="form-group">
+								<label for="agent-persona">Persona</label>
+								<select id="agent-persona" class="form-select" bind:value={addAgentPersonaId}>
+									<option value="" disabled>Select a persona</option>
+									{#each data.personas ?? [] as p}
+										<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
+									{/each}
+								</select>
+							</div>
+							<button class="btn btn-primary btn-sm" disabled={!addAgentPersonaId || addingAgent} onclick={addDevcontainer}>
+								{addingAgent ? 'Creating...' : 'Create Agent'}
+							</button>
+						</div>
+					{/if}
+
+					{#if devcontainers.length > 0}
+						<div class="agent-grid">
+							{#each devcontainers as dc (dc.id)}
+								<div class="agent-card card">
+									<div class="agent-card-header">
+										<div class="agent-identity">
+											{#if dc.persona_avatar}
+												<span class="agent-avatar">{dc.persona_avatar}</span>
 											{/if}
+											<div>
+												<div class="agent-name">{dc.persona_name ?? dc.service_name}</div>
+												{#if dc.persona_role}
+													<div class="agent-role">{dc.persona_role}</div>
+												{/if}
+											</div>
 										</div>
+										<span class="badge badge-{dc.status}">{dc.status}</span>
 									</div>
-									<span class="badge badge-{dc.status}">{dc.status}</span>
-								</div>
-								<div class="agent-service">
-									<code>{dc.service_name}</code>
-								</div>
-								{#if dc.error_message}
-									<div class="agent-error">{dc.error_message}</div>
-								{/if}
-								<div class="agent-actions">
-									{#if dc.status === 'running'}
-										<button class="btn btn-sm btn-secondary" onclick={() => { dcDispatchId = dc.id; }}>Dispatch</button>
-										<button class="btn btn-sm btn-danger" onclick={() => dcAction(dc.id, 'stop')}>Stop</button>
-									{:else if dc.status === 'stopped'}
-										<button class="btn btn-sm btn-primary" onclick={() => dcAction(dc.id, 'start')}>Start</button>
+									<div class="agent-service">
+										<code>{dc.service_name}</code>
+									</div>
+									{#if dc.error_message}
+										<div class="agent-error">{dc.error_message}</div>
 									{/if}
-									<button class="btn btn-sm btn-secondary" onclick={() => dcAction(dc.id, 'rebuild')}>Rebuild</button>
-									<button class="btn btn-sm btn-danger" onclick={() => dcDelete(dc.id)}>Remove</button>
+									<div class="agent-actions">
+										{#if dc.status === 'running'}
+											<button class="btn btn-sm btn-secondary" onclick={() => { dcDispatchId = dc.id; }}>Dispatch</button>
+											<button class="btn btn-sm btn-danger" onclick={() => dcAction(dc.id, 'stop')}>Stop</button>
+										{:else if dc.status === 'stopped'}
+											<button class="btn btn-sm btn-primary" onclick={() => dcAction(dc.id, 'start')}>Start</button>
+										{/if}
+										<button class="btn btn-sm btn-secondary" onclick={() => dcAction(dc.id, 'rebuild')}>Rebuild</button>
+										<button class="btn btn-sm btn-danger" onclick={() => dcDelete(dc.id)}>Remove</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<div class="empty-agents card">
+							<p>No agents yet. Add an agent to get started with multi-agent development.</p>
+						</div>
+					{/if}
+
+					<!-- Dispatch to devcontainer -->
+					{#if dcDispatchId}
+						{@const targetDc = devcontainers.find(d => d.id === dcDispatchId)}
+						<div class="dc-dispatch-section card">
+							<div class="dispatch-header">
+								<h3>Dispatch to {targetDc?.persona_name ?? targetDc?.service_name}</h3>
+								<button class="btn btn-sm btn-secondary" onclick={() => dcDispatchId = ''}>Cancel</button>
+							</div>
+							<div class="dc-dispatch-form">
+								<textarea
+									class="form-input"
+									placeholder="Enter task prompt..."
+									bind:value={dcDispatchPrompt}
+									rows="3"
+									onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); dispatchToDevcontainer(); } }}
+								></textarea>
+								<div class="dispatch-actions">
+									<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
+										{dcDispatching ? 'Dispatching...' : 'Dispatch'}
+									</button>
+									<span class="keyboard-hint">Ctrl+Enter</span>
 								</div>
 							</div>
-						{/each}
+						</div>
+					{/if}
+
+					<!-- Live task activity -->
+					{#if activeAgentTaskId}
+						{@const activeDc = devcontainers.find(d => d.id === activeAgentDcId)}
+						<div class="active-task-section card">
+							<div class="dispatch-header">
+								<h3>
+									{#if activeDc}
+										{activeDc.persona_avatar ?? ''} {activeDc.persona_name ?? activeDc.service_name} — Active Task
+									{:else}
+										Active Task
+									{/if}
+								</h3>
+								<button class="btn btn-sm btn-secondary" onclick={() => { activeAgentTaskId = null; activeAgentDcId = null; }}>Dismiss</button>
+							</div>
+							{#key activeAgentTaskId}
+								<AgentTaskActivity
+									taskId={activeAgentTaskId}
+									onComplete={() => { refreshClaudeData(); }}
+								/>
+							{/key}
+						</div>
+					{/if}
+
+					<!-- Shared Git Activity & Progress -->
+					<div class="claude-grid">
+						<div class="claude-card card">
+							<h3>Progress</h3>
+							<ClaudeProgressComponent progress={claudeProgress} />
+						</div>
+						<div class="claude-card card">
+							<h3>Git Activity</h3>
+							<ClaudeGitActivityComponent activity={claudeGitActivity} />
+						</div>
+					</div>
+
+					<div class="claude-card card">
+						<h3>Task Queue</h3>
+						<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
+					</div>
+
+					<div class="claude-card card">
+						<h3>Task History</h3>
+						<ClaudeTaskHistory tasks={claudeTaskHistory} />
 					</div>
 				{:else}
-					<div class="empty-agents card">
-						<p>No agents yet. Add an agent to get started with multi-agent development.</p>
-					</div>
-				{/if}
-
-				<!-- Dispatch to devcontainer -->
-				{#if dcDispatchId}
-					{@const targetDc = devcontainers.find(d => d.id === dcDispatchId)}
-					<div class="dc-dispatch-section card">
-						<div class="dispatch-header">
-							<h3>Dispatch to {targetDc?.persona_name ?? targetDc?.service_name}</h3>
-							<button class="btn btn-sm btn-secondary" onclick={() => dcDispatchId = ''}>Cancel</button>
-						</div>
-						<div class="dc-dispatch-form">
-							<textarea
-								class="form-input"
-								placeholder="Enter task prompt..."
-								bind:value={dcDispatchPrompt}
-								rows="3"
-								onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); dispatchToDevcontainer(); } }}
-							></textarea>
-							<div class="dispatch-actions">
-								<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
-									{dcDispatching ? 'Dispatching...' : 'Dispatch'}
-								</button>
-								<span class="keyboard-hint">Ctrl+Enter</span>
-							</div>
-						</div>
-					</div>
-				{/if}
-
-				<!-- Live task activity -->
-				{#if activeAgentTaskId}
-					{@const activeDc = devcontainers.find(d => d.id === activeAgentDcId)}
-					<div class="active-task-section card">
-						<div class="dispatch-header">
-							<h3>
-								{#if activeDc}
-									{activeDc.persona_avatar ?? ''} {activeDc.persona_name ?? activeDc.service_name} — Active Task
-								{:else}
-									Active Task
-								{/if}
-							</h3>
-							<button class="btn btn-sm btn-secondary" onclick={() => { activeAgentTaskId = null; activeAgentDcId = null; }}>Dismiss</button>
-						</div>
-						{#key activeAgentTaskId}
-							<AgentTaskActivity
-								taskId={activeAgentTaskId}
-								onComplete={() => { refreshClaudeData(); }}
-							/>
-						{/key}
-					</div>
-				{/if}
-
-				<!-- Shared Git Activity & Progress -->
-				<div class="claude-grid">
+					<!-- Standard single-agent mode -->
 					<div class="claude-card card">
-						<h3>Progress</h3>
-						<ClaudeProgressComponent progress={claudeProgress} />
+						<div class="dispatch-header">
+							<h3>Dispatch Task</h3>
+							{#if (data.assignedPersonas ?? []).length > 0}
+								<div class="persona-badges">
+									{#each data.assignedPersonas ?? [] as p (p.id)}
+										<span class="persona-badge" title="{p.name} — {p.role}">
+											{p.avatar} {p.role}
+										</span>
+									{/each}
+								</div>
+							{:else if data.persona}
+								<span class="persona-badge" title="{data.persona.name} — {data.persona.role}">
+									{data.persona.avatar} {data.persona.role}
+								</span>
+							{/if}
+						</div>
+						<ClaudeDispatch
+							envId={env.id}
+							activeTask={claudeActiveTask}
+							onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
+							onTaskCompleted={() => { refreshClaudeData(); }}
+						/>
 					</div>
+
+					<div class="claude-grid">
+						<div class="claude-card card">
+							<h3>Progress</h3>
+							<ClaudeProgressComponent progress={claudeProgress} />
+						</div>
+						<div class="claude-card card">
+							<h3>Git Activity</h3>
+							<ClaudeGitActivityComponent activity={claudeGitActivity} />
+						</div>
+					</div>
+
 					<div class="claude-card card">
-						<h3>Git Activity</h3>
-						<ClaudeGitActivityComponent activity={claudeGitActivity} />
+						<h3>Task Queue</h3>
+						<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
 					</div>
-				</div>
 
-				<div class="claude-card card">
-					<h3>Task Queue</h3>
-					<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
-				</div>
-
-				<div class="claude-card card">
-					<h3>Task History</h3>
-					<ClaudeTaskHistory tasks={claudeTaskHistory} />
-				</div>
+					<div class="claude-card card">
+						<h3>Task History</h3>
+						<ClaudeTaskHistory tasks={claudeTaskHistory} />
+					</div>
+				{/if}
 			{:else}
-				<!-- Standard single-agent mode -->
-				<div class="claude-card card">
-					<div class="dispatch-header">
-						<h3>Dispatch Task</h3>
-						{#if (data.assignedPersonas ?? []).length > 0}
-							<div class="persona-badges">
-								{#each data.assignedPersonas ?? [] as p (p.id)}
-									<span class="persona-badge" title="{p.name} — {p.role}">
-										{p.avatar} {p.role}
-									</span>
+				<!-- Orchestrator mode -->
+				<p class="mode-hint">AI coordinator that breaks down complex goals and spawns specialized agents in parallel waves.</p>
+
+				{#if selectedOrchestratorSession}
+					<div class="claude-card card">
+						<OrchestratorRunner
+							session={selectedOrchestratorSession}
+							onBack={() => { selectedOrchestratorSession = null; }}
+						/>
+					</div>
+				{:else}
+					<div class="claude-card card">
+						<OrchestratorLauncher
+							envId={env.id}
+							personas={(data.personas ?? []).map(p => ({ id: p.id, name: p.name, role: p.role, avatar: p.avatar }))}
+							onSessionStarted={(session) => {
+								orchestratorSessions = [session, ...orchestratorSessions];
+								selectedOrchestratorSession = session;
+							}}
+						/>
+					</div>
+
+					{#if orchestratorSessions.length > 0}
+						<div class="claude-card card" style="margin-top: 0.75rem;">
+							<h4 style="margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--text-primary, #e4e4e7);">Recent Sessions</h4>
+							<div style="display: flex; flex-direction: column; gap: 0.375rem;">
+								{#each orchestratorSessions as sess}
+									<button
+										class="orch-session-row"
+										onclick={() => { selectedOrchestratorSession = sess; }}
+									>
+										<span class="orch-status" style="color: {sess.status === 'completed' ? '#22c55e' : sess.status === 'error' ? '#ef4444' : sess.status === 'running' ? '#3b82f6' : '#a1a1aa'}">{sess.status}</span>
+										<span class="orch-goal">{sess.goal.slice(0, 80)}{sess.goal.length > 80 ? '...' : ''}</span>
+										<span class="orch-meta">{sess.agent_count} agents &middot; ${sess.total_cost_usd.toFixed(4)}</span>
+									</button>
 								{/each}
 							</div>
-						{:else if data.persona}
-							<span class="persona-badge" title="{data.persona.name} — {data.persona.role}">
-								{data.persona.avatar} {data.persona.role}
-							</span>
-						{/if}
-					</div>
-					<ClaudeDispatch
-						envId={env.id}
-						activeTask={claudeActiveTask}
-						onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
-						onTaskCompleted={() => { refreshClaudeData(); }}
-					/>
-				</div>
-
-				<div class="claude-grid">
-					<div class="claude-card card">
-						<h3>Progress</h3>
-						<ClaudeProgressComponent progress={claudeProgress} />
-					</div>
-					<div class="claude-card card">
-						<h3>Git Activity</h3>
-						<ClaudeGitActivityComponent activity={claudeGitActivity} />
-					</div>
-				</div>
-
-				<div class="claude-card card">
-					<h3>Task Queue</h3>
-					<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
-				</div>
-
-				<div class="claude-card card">
-					<h3>Task History</h3>
-					<ClaudeTaskHistory tasks={claudeTaskHistory} />
-				</div>
+						</div>
+					{/if}
+				{/if}
 			{/if}
 		</div>
 	{:else if env.status === 'running' && env.ip_address && activeTab === 'pipelines'}
@@ -904,46 +955,6 @@
 						onClone={(id) => { selectedPipelineId = id; refreshPipelines(); }}
 					/>
 				</div>
-			{/if}
-		</div>
-	{:else if env.status === 'running' && env.ip_address && activeTab === 'orchestrator'}
-		<div class="claude-section">
-			{#if selectedOrchestratorSession}
-				<div class="claude-card card">
-					<OrchestratorRunner
-						session={selectedOrchestratorSession}
-						onBack={() => { selectedOrchestratorSession = null; }}
-					/>
-				</div>
-			{:else}
-				<div class="claude-card card">
-					<OrchestratorLauncher
-						envId={env.id}
-						personas={(data.personas ?? []).map(p => ({ id: p.id, name: p.name, role: p.role, avatar: p.avatar }))}
-						onSessionStarted={(session) => {
-							orchestratorSessions = [session, ...orchestratorSessions];
-							selectedOrchestratorSession = session;
-						}}
-					/>
-				</div>
-
-				{#if orchestratorSessions.length > 0}
-					<div class="claude-card card" style="margin-top: 0.75rem;">
-						<h4 style="margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--text-primary, #e4e4e7);">Recent Sessions</h4>
-						<div style="display: flex; flex-direction: column; gap: 0.375rem;">
-							{#each orchestratorSessions as sess}
-								<button
-									class="orch-session-row"
-									onclick={() => { selectedOrchestratorSession = sess; }}
-								>
-									<span class="orch-status" style="color: {sess.status === 'completed' ? '#22c55e' : sess.status === 'error' ? '#ef4444' : sess.status === 'running' ? '#3b82f6' : '#a1a1aa'}">{sess.status}</span>
-									<span class="orch-goal">{sess.goal.slice(0, 80)}{sess.goal.length > 80 ? '...' : ''}</span>
-									<span class="orch-meta">{sess.agent_count} agents &middot; ${sess.total_cost_usd.toFixed(4)}</span>
-								</button>
-							{/each}
-						</div>
-					</div>
-				{/if}
 			{/if}
 		</div>
 	{:else if env.status === 'running' && !env.ip_address}
@@ -1309,6 +1320,52 @@
 	.tab-btn:hover:not(.active) {
 		background-color: rgba(255, 255, 255, 0.04);
 		color: var(--text-primary);
+	}
+
+	/* ---- Agent mode switcher ---- */
+
+	.agent-mode-switcher {
+		display: flex;
+		gap: 0;
+		margin-bottom: 4px;
+	}
+
+	.mode-pill {
+		padding: 5px 16px;
+		font-size: 0.75rem;
+		font-weight: 500;
+		background: rgba(255, 255, 255, 0.03);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: background-color var(--transition), color var(--transition), border-color var(--transition);
+	}
+
+	.mode-pill:first-child {
+		border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+	}
+
+	.mode-pill:last-child {
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+		border-left: none;
+	}
+
+	.mode-pill.active {
+		background-color: rgba(99, 102, 241, 0.12);
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.mode-pill:hover:not(.active) {
+		background-color: rgba(255, 255, 255, 0.06);
+		color: var(--text-primary);
+	}
+
+	.mode-hint {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		margin: 0 0 8px;
+		line-height: 1.4;
 	}
 
 	/* ---- Claude section ---- */

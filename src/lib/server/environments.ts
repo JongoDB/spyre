@@ -728,6 +728,13 @@ async function createViaCommunityScript(
     }
   }
 
+  // Also write to spyre user home for lightweight agents
+  try {
+    await injectSpyreTracking(ctx.exec, '/home/spyre', persona, projectContext);
+  } catch (trackErr) {
+    console.warn('[spyre] Spyre user CLAUDE.md injection failed (non-fatal):', trackErr);
+  }
+
   // Install Claude CLI if requested (opt-in)
   if (req.install_claude) {
     logProvisioningStep(id, 'claude_install', 'running', 'Installing Claude Code...');
@@ -1160,6 +1167,13 @@ async function createViaProxmoxApi(
     } catch (trackErr) {
       console.warn('[spyre] Project-level CLAUDE.md injection failed (non-fatal):', trackErr);
     }
+  }
+
+  // Also write to spyre user home for lightweight agents
+  try {
+    await injectSpyreTracking(ctx.exec, '/home/spyre', persona, projectContext);
+  } catch (trackErr) {
+    console.warn('[spyre] Spyre user CLAUDE.md injection failed (non-fatal):', trackErr);
   }
 
   // Install Claude CLI if requested (opt-in)

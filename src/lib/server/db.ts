@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { getEnvConfig } from './env-config';
-import { seedDefaultPersonas } from './personas';
+import { seedDefaultPersonas, upgradeDefaultPersonaInstructions } from './personas';
 
 let _db: Database.Database | null = null;
 let _needsSeed = false;
@@ -736,6 +736,7 @@ export function getDb(): Database.Database {
   if (_needsSeed) {
     _needsSeed = false;
     seedDefaultPersonas();
+    upgradeDefaultPersonaInstructions();
   }
   return _db;
 }
