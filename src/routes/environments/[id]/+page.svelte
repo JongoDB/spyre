@@ -696,7 +696,7 @@
 				{:else if agentMode === 'orchestrator'}
 					An AI coordinator that decomposes a high-level goal into parallel agents automatically. Best for broad tasks that benefit from divide-and-conquer: "implement this feature end-to-end," "refactor this module," or "audit and fix security issues across the codebase."
 				{:else}
-					Define explicit multi-step workflows with human approval gates between stages. Best when you need checkpoints, manual review, and repeatable processes: "design, review, implement, test" with sign-off at each stage.
+					Define explicit multi-step workflows that chain agent tasks, orchestrator sessions, and human approval gates. Best when you need checkpoints and manual sign-off between stages: "design, review, implement, test" as a repeatable process.
 				{/if}
 			</p>
 		</div>
@@ -846,25 +846,11 @@
 				{:else}
 					<!-- Standard single-agent mode -->
 					<div class="claude-card card">
-						<div class="dispatch-header">
-							<h3>Dispatch Task</h3>
-							{#if (data.assignedPersonas ?? []).length > 0}
-								<div class="persona-badges">
-									{#each data.assignedPersonas ?? [] as p (p.id)}
-										<span class="persona-badge" title="{p.name} — {p.role}">
-											{p.avatar} {p.role}
-										</span>
-									{/each}
-								</div>
-							{:else if data.persona}
-								<span class="persona-badge" title="{data.persona.name} — {data.persona.role}">
-									{data.persona.avatar} {data.persona.role}
-								</span>
-							{/if}
-						</div>
+						<h3>Dispatch Task</h3>
 						<ClaudeDispatch
 							envId={env.id}
 							activeTask={claudeActiveTask}
+							personas={(data.personas ?? []).map(p => ({ id: p.id, name: p.name, role: p.role, avatar: p.avatar }))}
 							onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
 							onTaskCompleted={() => { refreshClaudeData(); }}
 						/>

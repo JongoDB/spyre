@@ -528,7 +528,7 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
   // Route to devcontainer or direct execution
   const execPromise = devcontainerId
     ? executeDevcontainerTask(taskId, envId, devcontainerId, prompt, workingDir)
-    : executeTask(taskId, envId, prompt, workingDir, options.model);
+    : executeTask(taskId, envId, prompt, workingDir, options.model, options.personaId);
 
   execPromise.catch((err) => {
     console.error(`[spyre] Task ${taskId} execution error:`, err);
@@ -610,7 +610,8 @@ async function executeTask(
   envId: string,
   prompt: string,
   workingDir?: string,
-  model?: 'haiku' | 'sonnet' | 'opus'
+  model?: 'haiku' | 'sonnet' | 'opus',
+  personaId?: string
 ): Promise<void> {
   const config = getEnvConfig();
   const taskTimeout = config.claude?.task_timeout ?? 600000;
@@ -646,8 +647,10 @@ async function executeTask(
     const client = await getConnection(envId);
 
     // Look up persona and project context for prompt framing
+    // Explicit personaId (per-task) takes priority over environment default
     const env = getEnvironment(envId);
-    const persona = env?.persona_id ? getPersona(env.persona_id) ?? null : null;
+    const resolvedPersonaId = personaId ?? env?.persona_id;
+    const persona = resolvedPersonaId ? getPersona(resolvedPersonaId) ?? null : null;
     const projectContext = env?.repo_url || env?.project_dir
       ? { repoUrl: env.repo_url, gitBranch: env.git_branch, projectDir: env.project_dir }
       : null;

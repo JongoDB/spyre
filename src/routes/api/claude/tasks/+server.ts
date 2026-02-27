@@ -14,13 +14,13 @@ export const GET: RequestHandler = async ({ url }) => {
 export const POST: RequestHandler = async ({ request }) => {
   try {
     const body = await request.json();
-    const { envId, prompt, workingDir } = body;
+    const { envId, prompt, workingDir, personaId } = body;
 
     if (!envId || !prompt) {
       return json({ code: 'INVALID_REQUEST', message: 'envId and prompt are required' }, { status: 400 });
     }
 
-    const taskId = await dispatch({ envId, prompt, workingDir });
+    const taskId = await dispatch({ envId, prompt, workingDir, personaId });
     return json({ taskId }, { status: 201 });
   } catch (err) {
     const code = (err as { code?: string })?.code ?? 'DISPATCH_ERROR';

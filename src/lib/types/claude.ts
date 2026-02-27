@@ -106,6 +106,7 @@ export interface ClaudeDispatchOptions {
   workingDir?: string;
   devcontainerId?: string;
   model?: 'haiku' | 'sonnet' | 'opus';
+  personaId?: string;
   lightweightAgentId?: string;
   mcpRole?: 'orchestrator' | 'agent';
 }

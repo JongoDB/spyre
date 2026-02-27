@@ -3,17 +3,26 @@
 	import type { ClaudeTask, ClaudeTaskEvent } from '$lib/types/claude';
 	import { addToast } from '$lib/stores/toast.svelte';
 
+	interface PersonaOption {
+		id: string;
+		name: string;
+		role: string;
+		avatar: string;
+	}
+
 	interface Props {
 		envId: string;
 		activeTask?: ClaudeTask | null;
+		personas?: PersonaOption[];
 		onTaskStarted?: (taskId: string) => void;
 		onTaskCompleted?: () => void;
 	}
 
-	let { envId, activeTask = null, onTaskStarted, onTaskCompleted }: Props = $props();
+	let { envId, activeTask = null, personas = [], onTaskStarted, onTaskCompleted }: Props = $props();
 
 	let prompt = $state('');
 	let workingDir = $state('');
+	let selectedPersonaId = $state('');
 	let dispatching = $state(false);
 	let streamOutput = $state('');
 	let streamWs: WebSocket | null = $state(null);
@@ -118,7 +127,8 @@
 				body: JSON.stringify({
 					envId,
 					prompt: prompt.trim(),
-					workingDir: workingDir.trim() || undefined
+					workingDir: workingDir.trim() || undefined,
+					personaId: selectedPersonaId || undefined
 				})
 			});
 
@@ -287,9 +297,25 @@
 
 <div class="dispatch-panel">
 	<div class="dispatch-form">
+		{#if personas.length > 0}
+			<div class="persona-selector">
+				{#each personas as p (p.id)}
+					<button
+						class="persona-chip"
+						class:selected={selectedPersonaId === p.id}
+						disabled={isRunning}
+						onclick={() => { selectedPersonaId = selectedPersonaId === p.id ? '' : p.id; }}
+						title="{p.name} — {p.role}"
+					>
+						<span class="chip-avatar">{p.avatar}</span>
+						<span class="chip-name">{p.name}</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
 		<textarea
 			class="prompt-input"
-			placeholder="Enter a prompt for Claude Code..."
+			placeholder={selectedPersonaId ? `Dispatch as ${personas.find(p => p.id === selectedPersonaId)?.name ?? 'agent'}...` : 'Enter a prompt for Claude Code...'}
 			bind:value={prompt}
 			rows="3"
 			disabled={isRunning}
@@ -322,7 +348,7 @@
 				{/if}
 			</div>
 		</div>
-		<span class="hint">Ctrl+Enter to run</span>
+		<span class="hint">Ctrl+Enter to run{#if selectedPersonaId} &middot; {personas.find(p => p.id === selectedPersonaId)?.name}{/if}</span>
 	</div>
 
 	{#if streamWs || events.length > 0 || streamOutput || taskStatus}
@@ -410,6 +436,51 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+	}
+
+	.persona-selector {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	.persona-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 10px;
+		border-radius: 14px;
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		cursor: pointer;
+		transition: all var(--transition);
+	}
+
+	.persona-chip:hover:not(:disabled) {
+		border-color: var(--accent);
+		color: var(--text-primary);
+	}
+
+	.persona-chip.selected {
+		background-color: rgba(99, 102, 241, 0.12);
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.persona-chip:disabled {
+		opacity: 0.4;
+		cursor: default;
+	}
+
+	.chip-avatar {
+		font-size: 0.8rem;
+		line-height: 1;
+	}
+
+	.chip-name {
+		font-weight: 500;
 	}
 
 	.prompt-input {
