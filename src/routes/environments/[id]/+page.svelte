@@ -704,179 +704,37 @@
 		<!-- Scrollable content area -->
 		<div class="claude-section">
 			{#if agentMode === 'single'}
-				{#if env.docker_enabled}
-					<!-- Docker Multi-Agent Mode -->
-					<div class="agent-header">
-						<h3>Agents</h3>
-						<button class="btn btn-primary btn-sm" onclick={() => showAddAgent = !showAddAgent}>
-							{showAddAgent ? 'Cancel' : '+ Add Agent'}
-						</button>
-					</div>
+				<div class="claude-card card">
+					<h3>Dispatch Task</h3>
+					<ClaudeDispatch
+						envId={env.id}
+						activeTask={claudeActiveTask}
+						personas={(data.personas ?? []).map(p => ({ id: p.id, name: p.name, role: p.role, avatar: p.avatar }))}
+						onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
+						onTaskCompleted={() => { refreshClaudeData(); }}
+					/>
+				</div>
 
-					{#if showAddAgent}
-						<div class="add-agent-form card">
-							<div class="form-group">
-								<label for="agent-persona">Persona</label>
-								<select id="agent-persona" class="form-select" bind:value={addAgentPersonaId}>
-									<option value="" disabled>Select a persona</option>
-									{#each data.personas ?? [] as p}
-										<option value={p.id}>{p.avatar} {p.name} — {p.role}</option>
-									{/each}
-								</select>
-							</div>
-							<button class="btn btn-primary btn-sm" disabled={!addAgentPersonaId || addingAgent} onclick={addDevcontainer}>
-								{addingAgent ? 'Creating...' : 'Create Agent'}
-							</button>
-						</div>
-					{/if}
-
-					{#if devcontainers.length > 0}
-						<div class="agent-grid">
-							{#each devcontainers as dc (dc.id)}
-								<div class="agent-card card">
-									<div class="agent-card-header">
-										<div class="agent-identity">
-											{#if dc.persona_avatar}
-												<span class="agent-avatar">{dc.persona_avatar}</span>
-											{/if}
-											<div>
-												<div class="agent-name">{dc.persona_name ?? dc.service_name}</div>
-												{#if dc.persona_role}
-													<div class="agent-role">{dc.persona_role}</div>
-												{/if}
-											</div>
-										</div>
-										<span class="badge badge-{dc.status}">{dc.status}</span>
-									</div>
-									<div class="agent-service">
-										<code>{dc.service_name}</code>
-									</div>
-									{#if dc.error_message}
-										<div class="agent-error">{dc.error_message}</div>
-									{/if}
-									<div class="agent-actions">
-										{#if dc.status === 'running'}
-											<button class="btn btn-sm btn-secondary" onclick={() => { dcDispatchId = dc.id; }}>Dispatch</button>
-											<button class="btn btn-sm btn-danger" onclick={() => dcAction(dc.id, 'stop')}>Stop</button>
-										{:else if dc.status === 'stopped'}
-											<button class="btn btn-sm btn-primary" onclick={() => dcAction(dc.id, 'start')}>Start</button>
-										{/if}
-										<button class="btn btn-sm btn-secondary" onclick={() => dcAction(dc.id, 'rebuild')}>Rebuild</button>
-										<button class="btn btn-sm btn-danger" onclick={() => dcDelete(dc.id)}>Remove</button>
-									</div>
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<div class="empty-agents card">
-							<p>No agents yet. Add an agent to get started with multi-agent development.</p>
-						</div>
-					{/if}
-
-					<!-- Dispatch to devcontainer -->
-					{#if dcDispatchId}
-						{@const targetDc = devcontainers.find(d => d.id === dcDispatchId)}
-						<div class="dc-dispatch-section card">
-							<div class="dispatch-header">
-								<h3>Dispatch to {targetDc?.persona_name ?? targetDc?.service_name}</h3>
-								<button class="btn btn-sm btn-secondary" onclick={() => dcDispatchId = ''}>Cancel</button>
-							</div>
-							<div class="dc-dispatch-form">
-								<textarea
-									class="form-input"
-									placeholder="Enter task prompt..."
-									bind:value={dcDispatchPrompt}
-									rows="3"
-									onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); dispatchToDevcontainer(); } }}
-								></textarea>
-								<div class="dispatch-actions">
-									<button class="btn btn-primary" disabled={!dcDispatchPrompt.trim() || dcDispatching} onclick={dispatchToDevcontainer}>
-										{dcDispatching ? 'Dispatching...' : 'Dispatch'}
-									</button>
-									<span class="keyboard-hint">Ctrl+Enter</span>
-								</div>
-							</div>
-						</div>
-					{/if}
-
-					<!-- Live task activity -->
-					{#if activeAgentTaskId}
-						{@const activeDc = devcontainers.find(d => d.id === activeAgentDcId)}
-						<div class="active-task-section card">
-							<div class="dispatch-header">
-								<h3>
-									{#if activeDc}
-										{activeDc.persona_avatar ?? ''} {activeDc.persona_name ?? activeDc.service_name} — Active Task
-									{:else}
-										Active Task
-									{/if}
-								</h3>
-								<button class="btn btn-sm btn-secondary" onclick={() => { activeAgentTaskId = null; activeAgentDcId = null; }}>Dismiss</button>
-							</div>
-							{#key activeAgentTaskId}
-								<AgentTaskActivity
-									taskId={activeAgentTaskId}
-									onComplete={() => { refreshClaudeData(); }}
-								/>
-							{/key}
-						</div>
-					{/if}
-
-					<!-- Shared Git Activity & Progress -->
-					<div class="claude-grid">
-						<div class="claude-card card">
-							<h3>Progress</h3>
-							<ClaudeProgressComponent progress={claudeProgress} />
-						</div>
-						<div class="claude-card card">
-							<h3>Git Activity</h3>
-							<ClaudeGitActivityComponent activity={claudeGitActivity} />
-						</div>
-					</div>
-
+				<div class="claude-grid">
 					<div class="claude-card card">
-						<h3>Task Queue</h3>
-						<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
+						<h3>Progress</h3>
+						<ClaudeProgressComponent progress={claudeProgress} />
 					</div>
-
 					<div class="claude-card card">
-						<h3>Task History</h3>
-						<ClaudeTaskHistory tasks={claudeTaskHistory} />
+						<h3>Git Activity</h3>
+						<ClaudeGitActivityComponent activity={claudeGitActivity} />
 					</div>
-				{:else}
-					<!-- Standard single-agent mode -->
-					<div class="claude-card card">
-						<h3>Dispatch Task</h3>
-						<ClaudeDispatch
-							envId={env.id}
-							activeTask={claudeActiveTask}
-							personas={(data.personas ?? []).map(p => ({ id: p.id, name: p.name, role: p.role, avatar: p.avatar }))}
-							onTaskStarted={() => { setTimeout(refreshClaudeData, 2000); }}
-							onTaskCompleted={() => { refreshClaudeData(); }}
-						/>
-					</div>
+				</div>
 
-					<div class="claude-grid">
-						<div class="claude-card card">
-							<h3>Progress</h3>
-							<ClaudeProgressComponent progress={claudeProgress} />
-						</div>
-						<div class="claude-card card">
-							<h3>Git Activity</h3>
-							<ClaudeGitActivityComponent activity={claudeGitActivity} />
-						</div>
-					</div>
+				<div class="claude-card card">
+					<h3>Task Queue</h3>
+					<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
+				</div>
 
-					<div class="claude-card card">
-						<h3>Task Queue</h3>
-						<ClaudeTaskQueue envId={env.id} items={claudeQueueItems} onQueueChanged={refreshClaudeData} />
-					</div>
-
-					<div class="claude-card card">
-						<h3>Task History</h3>
-						<ClaudeTaskHistory tasks={claudeTaskHistory} />
-					</div>
-				{/if}
+				<div class="claude-card card">
+					<h3>Task History</h3>
+					<ClaudeTaskHistory tasks={claudeTaskHistory} />
+				</div>
 			{:else if agentMode === 'orchestrator'}
 				{#if selectedOrchestratorSession}
 					<div class="claude-card card">
