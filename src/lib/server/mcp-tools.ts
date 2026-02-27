@@ -6,6 +6,14 @@ import { getActiveTaskForEnv, listTasks } from './claude-bridge';
 import { getProgressForEnv, getGitActivityForEnv } from './claude-poller';
 import { getPipelineWithSteps, listPipelines } from './pipeline-engine';
 import { getServicesForEnv } from './service-detector';
+import {
+  spawnAgent,
+  spawnAgents as spawnAgentsBatch,
+  waitForAgents,
+  getAgentWithPersona,
+  listAgents as listLightweightAgents,
+  getEmitter as getAgentEmitter,
+} from './agent-manager';
 import type { McpTokenPayload } from './mcp-auth';
 
 // =============================================================================
@@ -94,7 +102,24 @@ export async function listAgents(auth: McpTokenPayload): Promise<Record<string, 
     };
   });
 
-  return { env_id: auth.envId, agents };
+  // Also include lightweight agents
+  const lwAgents = listLightweightAgents(auth.envId);
+  const lightweightList = lwAgents.map(la => ({
+    id: la.id,
+    type: 'lightweight',
+    name: la.name,
+    status: la.status,
+    persona_name: la.persona_name ?? null,
+    persona_role: la.persona_role ?? null,
+    model: la.model,
+    wave_id: la.wave_id,
+    result: la.result_summary?.slice(0, 200) ?? null,
+    cost_usd: la.cost_usd,
+    spawned_at: la.spawned_at,
+    completed_at: la.completed_at,
+  }));
+
+  return { env_id: auth.envId, agents, lightweight_agents: lightweightList };
 }
 
 /**
@@ -319,4 +344,214 @@ export function getUnreadMessages(auth: McpTokenPayload): Array<{ id: string; fr
     message: m.message,
     created_at: m.created_at,
   }));
+}
+
+// =============================================================================
+// Dynamic Agent Orchestration Handlers
+// =============================================================================
+
+/**
+ * spyre_spawn_agent — Spawn a single lightweight agent
+ */
+export async function handleSpawnAgent(
+  auth: McpTokenPayload,
+  params: {
+    name: string;
+    role?: string;
+    persona_id?: string;
+    task: string;
+    model?: 'haiku' | 'sonnet' | 'opus';
+    wait?: boolean;
+    context?: Record<string, unknown>;
+  }
+): Promise<Record<string, unknown>> {
+  // Find orchestrator session for this agent (auth.agentId is the orchestrator's task agent ID)
+  const db = getDb();
+  const orch = db.prepare(
+    "SELECT id FROM orchestrator_sessions WHERE env_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1"
+  ).get(auth.envId) as { id: string } | undefined;
+
+  const agent = await spawnAgent({
+    envId: auth.envId,
+    orchestratorId: orch?.id,
+    name: params.name,
+    role: params.role,
+    personaId: params.persona_id,
+    taskPrompt: params.task,
+    model: params.model,
+    context: params.context,
+  });
+
+  if (params.wait) {
+    const [completed] = await waitForAgents([agent.id], 600000);
+    return {
+      agent_id: completed.id,
+      name: completed.name,
+      status: completed.status,
+      result: completed.result_summary,
+      cost_usd: completed.cost_usd,
+      error: completed.error_message,
+    };
+  }
+
+  return {
+    agent_id: agent.id,
+    name: agent.name,
+    status: agent.status,
+    message: 'Agent spawned. Use spyre_wait_for_agents or spyre_get_agent_status to check progress.',
+  };
+}
+
+/**
+ * spyre_spawn_agents — Batch spawn a wave of parallel agents
+ */
+export async function handleSpawnAgents(
+  auth: McpTokenPayload,
+  params: {
+    wave_name?: string;
+    agents: Array<{
+      name: string;
+      role?: string;
+      persona_id?: string;
+      task: string;
+      model?: 'haiku' | 'sonnet' | 'opus';
+      context?: Record<string, unknown>;
+    }>;
+  }
+): Promise<Record<string, unknown>> {
+  const db = getDb();
+  const orch = db.prepare(
+    "SELECT id FROM orchestrator_sessions WHERE env_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1"
+  ).get(auth.envId) as { id: string } | undefined;
+
+  const result = await spawnAgentsBatch(auth.envId, orch?.id, {
+    wave_name: params.wave_name,
+    agents: params.agents.map(a => ({
+      name: a.name,
+      role: a.role,
+      task: a.task,
+      model: a.model,
+      persona_id: a.persona_id,
+      context: a.context,
+    })),
+  });
+
+  return {
+    wave_id: result.waveId,
+    wave_name: params.wave_name ?? null,
+    agents: result.agents.map(a => ({
+      agent_id: a.id,
+      name: a.name,
+      status: a.status,
+    })),
+    message: `${result.agents.length} agents spawned. Use spyre_wait_for_agents with the agent IDs to wait for completion.`,
+  };
+}
+
+/**
+ * spyre_wait_for_agents — Wait for agents to reach terminal status
+ */
+export async function handleWaitForAgents(
+  auth: McpTokenPayload,
+  params: { agent_ids: string[]; timeout_seconds?: number }
+): Promise<Record<string, unknown>> {
+  const timeoutMs = (params.timeout_seconds ?? 600) * 1000;
+  const agents = await waitForAgents(params.agent_ids, timeoutMs);
+
+  return {
+    agents: agents.map(a => ({
+      agent_id: a.id,
+      name: a.name,
+      status: a.status,
+      result: a.result_summary,
+      cost_usd: a.cost_usd,
+      error: a.error_message,
+    })),
+    all_completed: agents.every(a => a.status === 'completed'),
+  };
+}
+
+/**
+ * spyre_get_agent_status — Check a single agent's current state
+ */
+export async function handleGetAgentStatus(
+  _auth: McpTokenPayload,
+  params: { agent_id: string }
+): Promise<Record<string, unknown>> {
+  const agent = getAgentWithPersona(params.agent_id);
+  if (!agent) {
+    return { error: 'Agent not found', agent_id: params.agent_id };
+  }
+
+  return {
+    agent_id: agent.id,
+    name: agent.name,
+    role: agent.role,
+    persona_name: agent.persona_name,
+    status: agent.status,
+    model: agent.model,
+    result: agent.result_summary,
+    cost_usd: agent.cost_usd,
+    error: agent.error_message,
+    wave_id: agent.wave_id,
+    spawned_at: agent.spawned_at,
+    completed_at: agent.completed_at,
+  };
+}
+
+/**
+ * spyre_ask_user — Ask the human a question, poll for answer
+ */
+export async function handleAskUser(
+  auth: McpTokenPayload,
+  params: { question: string; options?: string[] }
+): Promise<Record<string, unknown>> {
+  const db = getDb();
+  const requestId = uuid();
+
+  // Find orchestrator session
+  const orch = db.prepare(
+    "SELECT id FROM orchestrator_sessions WHERE env_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1"
+  ).get(auth.envId) as { id: string } | undefined;
+
+  db.prepare(`
+    INSERT INTO ask_user_requests (id, env_id, orchestrator_id, agent_id, question, options, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+  `).run(
+    requestId, auth.envId, orch?.id ?? null, auth.agentId,
+    params.question, params.options ? JSON.stringify(params.options) : null
+  );
+
+  // Emit event for frontend notification
+  const agentEmitter = getAgentEmitter();
+  agentEmitter.emit(`ask-user:${auth.envId}`, {
+    request: { id: requestId, question: params.question, options: params.options },
+  });
+
+  // Poll for answer (1s interval, 5 min timeout)
+  const maxWaitMs = 300000;
+  const pollIntervalMs = 1000;
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    const row = db.prepare(
+      'SELECT status, response FROM ask_user_requests WHERE id = ?'
+    ).get(requestId) as { status: string; response: string | null } | undefined;
+
+    if (row?.status === 'answered' && row.response !== null) {
+      return { answer: row.response };
+    }
+    if (row?.status === 'cancelled') {
+      return { error: 'Request cancelled by user' };
+    }
+
+    await new Promise(r => setTimeout(r, pollIntervalMs));
+  }
+
+  // Timeout — mark as expired
+  db.prepare(
+    "UPDATE ask_user_requests SET status = 'expired' WHERE id = ? AND status = 'pending'"
+  ).run(requestId);
+
+  return { error: 'Timed out waiting for user response (5 minutes)' };
 }

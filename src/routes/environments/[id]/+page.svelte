@@ -16,8 +16,11 @@
 	import PipelineBuilder from '$lib/components/PipelineBuilder.svelte';
 	import PipelineRunner from '$lib/components/PipelineRunner.svelte';
 	import AgentTaskActivity from '$lib/components/AgentTaskActivity.svelte';
+	import OrchestratorLauncher from '$lib/components/OrchestratorLauncher.svelte';
+	import OrchestratorRunner from '$lib/components/OrchestratorRunner.svelte';
 	import { addToast } from '$lib/stores/toast.svelte';
 	import type { Pipeline } from '$lib/types/pipeline';
+	import type { OrchestratorSession } from '$lib/types/orchestrator';
 
 	type PipelineListItem = Pipeline & { step_count: number; completed_count: number };
 
@@ -90,7 +93,7 @@
 	let claudeActiveTask = $state<ClaudeTask | null>(data.claude?.activeTask ?? null);
 	let claudeTaskHistory = $state<ClaudeTask[]>(data.claude?.taskHistory ?? []);
 	let claudeQueueItems = $state<ClaudeTaskQueueItem[]>((data.claude?.queueItems ?? []) as ClaudeTaskQueueItem[]);
-	let activeTab = $state<'terminal' | 'claude' | 'pipelines'>('terminal');
+	let activeTab = $state<'terminal' | 'claude' | 'pipelines' | 'orchestrator'>('terminal');
 
 	// Devcontainer state (docker multi-agent mode)
 	let devcontainers = $state<DevcontainerWithPersona[]>(data.devcontainers ?? []);
@@ -111,6 +114,10 @@
 	let pipelines = $state<PipelineListItem[]>(data.pipelines ?? []);
 	let pipelineView = $state<'list' | 'builder' | 'runner'>('list');
 	let selectedPipelineId = $state<string | null>(null);
+
+	// Orchestrator state
+	let orchestratorSessions = $state<OrchestratorSession[]>(data.orchestratorSessions ?? []);
+	let selectedOrchestratorSession = $state<OrchestratorSession | null>(null);
 
 	async function refreshDevcontainers() {
 		try {
@@ -667,6 +674,7 @@
 			{#if env.docker_enabled}
 				<button class="tab-btn" class:active={activeTab === 'pipelines'} onclick={() => activeTab = 'pipelines'}>Pipelines</button>
 			{/if}
+			<button class="tab-btn" class:active={activeTab === 'orchestrator'} onclick={() => activeTab = 'orchestrator'}>Orchestrator</button>
 		</div>
 	{/if}
 
@@ -896,6 +904,46 @@
 						onClone={(id) => { selectedPipelineId = id; refreshPipelines(); }}
 					/>
 				</div>
+			{/if}
+		</div>
+	{:else if env.status === 'running' && env.ip_address && activeTab === 'orchestrator'}
+		<div class="claude-section">
+			{#if selectedOrchestratorSession}
+				<div class="claude-card card">
+					<OrchestratorRunner
+						session={selectedOrchestratorSession}
+						onBack={() => { selectedOrchestratorSession = null; }}
+					/>
+				</div>
+			{:else}
+				<div class="claude-card card">
+					<OrchestratorLauncher
+						envId={env.id}
+						personas={(data.personas ?? []).map(p => ({ id: p.id, name: p.name, role: p.role, avatar: p.avatar }))}
+						onSessionStarted={(session) => {
+							orchestratorSessions = [session, ...orchestratorSessions];
+							selectedOrchestratorSession = session;
+						}}
+					/>
+				</div>
+
+				{#if orchestratorSessions.length > 0}
+					<div class="claude-card card" style="margin-top: 0.75rem;">
+						<h4 style="margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--text-primary, #e4e4e7);">Recent Sessions</h4>
+						<div style="display: flex; flex-direction: column; gap: 0.375rem;">
+							{#each orchestratorSessions as sess}
+								<button
+									class="orch-session-row"
+									onclick={() => { selectedOrchestratorSession = sess; }}
+								>
+									<span class="orch-status" style="color: {sess.status === 'completed' ? '#22c55e' : sess.status === 'error' ? '#ef4444' : sess.status === 'running' ? '#3b82f6' : '#a1a1aa'}">{sess.status}</span>
+									<span class="orch-goal">{sess.goal.slice(0, 80)}{sess.goal.length > 80 ? '...' : ''}</span>
+									<span class="orch-meta">{sess.agent_count} agents &middot; ${sess.total_cost_usd.toFixed(4)}</span>
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
 			{/if}
 		</div>
 	{:else if env.status === 'running' && !env.ip_address}
@@ -1560,6 +1608,46 @@
 		padding: 2px 8px;
 		border-radius: 4px;
 		border: 1px solid var(--border);
+	}
+
+	:global(.orch-session-row) {
+		all: unset;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		padding: 0.5rem;
+		border-radius: 6px;
+		background: var(--bg-secondary, #1e1e2e);
+		border: 1px solid var(--border, #333);
+		transition: border-color 0.15s;
+	}
+
+	:global(.orch-session-row:hover) {
+		border-color: var(--accent, #6d5dfc);
+	}
+
+	:global(.orch-status) {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		width: 70px;
+		flex-shrink: 0;
+	}
+
+	:global(.orch-goal) {
+		flex: 1;
+		font-size: 0.8rem;
+		color: var(--text-primary, #e4e4e7);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	:global(.orch-meta) {
+		font-size: 0.7rem;
+		color: var(--text-secondary, #a1a1aa);
+		flex-shrink: 0;
 	}
 
 </style>

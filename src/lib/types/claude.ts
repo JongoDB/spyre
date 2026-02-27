@@ -105,6 +105,9 @@ export interface ClaudeDispatchOptions {
   prompt: string;
   workingDir?: string;
   devcontainerId?: string;
+  model?: 'haiku' | 'sonnet' | 'opus';
+  lightweightAgentId?: string;
+  mcpRole?: 'orchestrator' | 'agent';
 }
 
 export interface ClaudeStreamEvent {

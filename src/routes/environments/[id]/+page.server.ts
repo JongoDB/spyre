@@ -9,6 +9,7 @@ import { getProvisioningProgress } from '$lib/server/provisioning-log';
 import { getPersona, listPersonas } from '$lib/server/personas';
 import { listDevcontainers } from '$lib/server/devcontainers';
 import { listPipelines } from '$lib/server/pipeline-engine';
+import { listSessions as listOrchestratorSessions } from '$lib/server/orchestrator';
 
 export const load: PageServerLoad = async ({ params }) => {
   let env = getEnvironment(params.id);
@@ -82,6 +83,9 @@ export const load: PageServerLoad = async ({ params }) => {
   // Load pipelines for docker-enabled environments
   const pipelines = env.docker_enabled ? listPipelines(env.id) : [];
 
+  // Load orchestrator sessions
+  const orchestratorSessions = listOrchestratorSessions(env.id);
+
   return {
     environment: env,
     metadata,
@@ -91,6 +95,7 @@ export const load: PageServerLoad = async ({ params }) => {
     devcontainers,
     personas,
     pipelines,
+    orchestratorSessions,
     claude: {
       activeTask,
       taskHistory,

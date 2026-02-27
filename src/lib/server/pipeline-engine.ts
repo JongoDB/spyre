@@ -5,6 +5,7 @@ import { getEnvironment } from './environments';
 import { dispatch as claudeDispatch, getEmitter as getClaudeEmitter, getTask as getClaudeTask } from './claude-bridge';
 import { getConnection } from './ssh-pool';
 import { scanAndStoreServices } from './service-detector';
+import { startOrchestrator, getEmitter as getOrchestratorEmitter } from './orchestrator';
 import type {
   Pipeline,
   PipelineStep,
@@ -311,6 +312,9 @@ async function advancePipeline(pipelineId: string): Promise<void> {
       if (step.type === 'agent') {
         await dispatchAgentStep(pipeline, step);
         dispatchedAgents = true;
+      } else if (step.type === 'orchestrator') {
+        await dispatchOrchestratorStep(pipeline, step);
+        dispatchedAgents = true;
       } else if (step.type === 'gate') {
         db.prepare(
           "UPDATE pipeline_steps SET status = 'waiting', started_at = datetime('now') WHERE id = ?"
@@ -441,6 +445,9 @@ async function advancePipeline(pipelineId: string): Promise<void> {
     if (step.type === 'agent') {
       await dispatchAgentStep(pipeline, step);
       hasAgent = true;
+    } else if (step.type === 'orchestrator') {
+      await dispatchOrchestratorStep(pipeline, step);
+      hasAgent = true;
     } else if (step.type === 'gate') {
       db.prepare(
         "UPDATE pipeline_steps SET status = 'waiting', started_at = datetime('now') WHERE id = ?"
@@ -533,6 +540,70 @@ async function dispatchAgentStep(pipeline: Pipeline, step: PipelineStep): Promis
     emitPipelineEvent(pipeline.id, 'step_error', { stepId: step.id, error: message });
 
     // Trigger advance to handle the error (auto-retry or fail)
+    await advancePipeline(pipeline.id);
+  }
+}
+
+// =============================================================================
+// Orchestrator Step Dispatch
+// =============================================================================
+
+async function dispatchOrchestratorStep(pipeline: Pipeline, step: PipelineStep): Promise<void> {
+  const db = getDb();
+
+  db.prepare(
+    "UPDATE pipeline_steps SET status = 'running', started_at = datetime('now') WHERE id = ?"
+  ).run(step.id);
+
+  emitPipelineEvent(pipeline.id, 'step_started', { stepId: step.id, label: step.label });
+
+  try {
+    const goal = step.prompt_template ?? pipeline.description ?? pipeline.name;
+    const session = await startOrchestrator({
+      envId: pipeline.env_id,
+      goal,
+      pipelineId: pipeline.id,
+    });
+
+    // Listen for orchestrator completion
+    const orchEmitter = getOrchestratorEmitter();
+    const onComplete = (data: { sessionId: string; status: string; result?: string; error?: string }) => {
+      orchEmitter.removeListener(`orchestrator:${session.id}:complete`, onComplete);
+
+      const finalStatus = data.status === 'completed' ? 'completed' : 'error';
+      const resultSummary = data.result?.slice(0, 2000) ?? null;
+
+      // Get cost from orchestrator session
+      const updatedSession = db.prepare('SELECT total_cost_usd FROM orchestrator_sessions WHERE id = ?')
+        .get(session.id) as { total_cost_usd: number } | undefined;
+      const costUsd = updatedSession?.total_cost_usd ?? null;
+
+      db.prepare(`
+        UPDATE pipeline_steps
+        SET status = ?, result_summary = ?, cost_usd = ?, completed_at = datetime('now')
+        WHERE id = ?
+      `).run(finalStatus, resultSummary ?? data.error, costUsd, step.id);
+
+      emitPipelineEvent(pipeline.id, finalStatus === 'completed' ? 'step_completed' : 'step_error', {
+        stepId: step.id,
+        label: step.label,
+        result: resultSummary,
+        cost: costUsd,
+      });
+
+      advancePipeline(pipeline.id).catch(err => {
+        console.error(`[spyre] Pipeline advance after orchestrator step failed:`, err);
+      });
+    };
+
+    orchEmitter.on(`orchestrator:${session.id}:complete`, onComplete);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String((err as { message?: string }).message ?? err);
+    db.prepare(
+      "UPDATE pipeline_steps SET status = 'error', result_summary = ?, completed_at = datetime('now') WHERE id = ?"
+    ).run(`Orchestrator dispatch failed: ${message}`, step.id);
+
+    emitPipelineEvent(pipeline.id, 'step_error', { stepId: step.id, error: message });
     await advancePipeline(pipeline.id);
   }
 }

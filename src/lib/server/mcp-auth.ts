@@ -31,10 +31,13 @@ export function getOrCreateMcpSecret(): string {
 /**
  * Generate an MCP bearer token for a specific environment + agent.
  * Token format: `${base64(payload)}.${base64(signature)}`
+ * The optional role field controls MCP tool visibility (orchestrator vs agent).
  */
-export function generateMcpToken(envId: string, agentId: string): string {
+export function generateMcpToken(envId: string, agentId: string, role?: 'orchestrator' | 'agent'): string {
   const secret = getOrCreateMcpSecret();
-  const payload = `${envId}:${agentId}:${Date.now()}`;
+  const payload = role
+    ? `${envId}:${agentId}:${Date.now()}:${role}`
+    : `${envId}:${agentId}:${Date.now()}`;
   const payloadB64 = Buffer.from(payload).toString('base64url');
 
   const signature = createHmac('sha256', secret)
@@ -49,6 +52,7 @@ export interface McpTokenPayload {
   envId: string;
   agentId: string;
   issuedAt: number;
+  role?: 'orchestrator' | 'agent';
 }
 
 /**
@@ -90,14 +94,30 @@ export function validateMcpToken(token: string): McpTokenPayload | null {
   const parts = payload.split(':');
   if (parts.length < 3) return null;
 
-  const issuedAt = parseInt(parts[parts.length - 1], 10);
+  // Check if last part is a role (orchestrator/agent) — 4-field format
+  const lastPart = parts[parts.length - 1];
+  let role: 'orchestrator' | 'agent' | undefined;
+  let timestampIdx: number;
+
+  if (lastPart === 'orchestrator' || lastPart === 'agent') {
+    role = lastPart;
+    timestampIdx = parts.length - 2;
+  } else {
+    timestampIdx = parts.length - 1;
+  }
+
+  const issuedAt = parseInt(parts[timestampIdx], 10);
   if (isNaN(issuedAt)) return null;
 
-  // envId may contain colons (UUIDs don't, but be safe)
-  const agentId = parts[parts.length - 2];
-  const envId = parts.slice(0, parts.length - 2).join(':');
+  // agentId is one before the timestamp
+  const agentIdx = timestampIdx - 1;
+  if (agentIdx < 1) return null;
+
+  const agentId = parts[agentIdx];
+  // envId is everything before agentId (may contain colons)
+  const envId = parts.slice(0, agentIdx).join(':');
 
   if (!envId || !agentId) return null;
 
-  return { envId, agentId, issuedAt };
+  return { envId, agentId, issuedAt, role };
 }

@@ -39,6 +39,14 @@ export function spyreWebSocket(): Plugin {
         getTaskEvents: (id: string) => Array<{ seq: number; type: string; timestamp: string; summary: string; data: Record<string, unknown> }>;
         getEmitter: () => import('node:events').EventEmitter;
       } | null = null;
+      let orchestratorMod: {
+        getSession: (id: string) => unknown;
+        getEmitter: () => import('node:events').EventEmitter;
+      } | null = null;
+      let agentManagerMod: {
+        listAgents: (envId: string, orchestratorId?: string) => unknown[];
+        getEmitter: () => import('node:events').EventEmitter;
+      } | null = null;
 
       viteServer.httpServer.on('upgrade', (req, socket, head) => {
         const url = req.url ?? '';
@@ -161,6 +169,90 @@ export function spyreWebSocket(): Plugin {
               emitter.on(`task:${taskId}:output`, onOutput);
               emitter.on(`task:${taskId}:event`, onEvent);
               emitter.on(`task:${taskId}:complete`, onComplete);
+
+              ws.on('close', cleanup);
+              ws.on('error', cleanup);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              try {
+                sendJson(ws, { type: 'error', message: msg });
+                ws.close();
+              } catch { /* socket may already be dead */ }
+            }
+          });
+          return;
+        }
+
+        // Orchestrator stream WebSocket: /api/orchestrator/{sessionId}/ws
+        const orchMatch = url.match(/^\/api\/orchestrator\/([^/?]+)\/ws/);
+        if (orchMatch) {
+          const sessionId = orchMatch[1];
+
+          wss.handleUpgrade(req, socket, head, async (ws) => {
+            try {
+              // Lazy-load orchestrator + agent-manager
+              if (!orchestratorMod) {
+                const mod = await viteServer.ssrLoadModule('/src/lib/server/orchestrator.ts');
+                orchestratorMod = {
+                  getSession: mod.getSession,
+                  getEmitter: mod.getEmitter,
+                };
+              }
+              if (!agentManagerMod) {
+                const mod = await viteServer.ssrLoadModule('/src/lib/server/agent-manager.ts');
+                agentManagerMod = {
+                  listAgents: mod.listAgents,
+                  getEmitter: mod.getEmitter,
+                };
+              }
+
+              const session = orchestratorMod.getSession(sessionId) as Record<string, unknown> | null;
+              if (!session) {
+                sendJson(ws, { type: 'error', message: 'Orchestrator session not found' });
+                ws.close();
+                return;
+              }
+
+              const envId = session.env_id as string;
+
+              // Send snapshot of current agents
+              const agents = agentManagerMod.listAgents(envId, sessionId);
+              sendJson(ws, { type: 'snapshot', session, agents });
+
+              const status = session.status as string;
+              if (status === 'completed' || status === 'error' || status === 'cancelled') {
+                sendJson(ws, { type: 'orchestrator-complete', sessionId, status });
+                ws.close();
+                return;
+              }
+
+              // Subscribe to live events
+              const orchEmitter = orchestratorMod.getEmitter();
+              const agentEmitter = agentManagerMod.getEmitter();
+
+              const onEvent = (data: unknown) => sendJson(ws, { type: 'orchestrator-event', ...(data as Record<string, unknown>) });
+              const onAgentSpawn = (data: unknown) => sendJson(ws, { type: 'agent-spawn', ...(data as Record<string, unknown>) });
+              const onAgentComplete = (data: unknown) => sendJson(ws, { type: 'agent-complete', ...(data as Record<string, unknown>) });
+              const onComplete = (data: unknown) => {
+                sendJson(ws, { type: 'orchestrator-complete', ...(data as Record<string, unknown>) });
+                cleanup();
+                ws.close();
+              };
+              const onAskUser = (data: unknown) => sendJson(ws, { type: 'ask-user', ...(data as Record<string, unknown>) });
+
+              function cleanup() {
+                orchEmitter.removeListener(`orchestrator:${sessionId}:event`, onEvent);
+                orchEmitter.removeListener(`orchestrator:${sessionId}:agent-spawn`, onAgentSpawn);
+                orchEmitter.removeListener(`orchestrator:${sessionId}:agent-complete`, onAgentComplete);
+                orchEmitter.removeListener(`orchestrator:${sessionId}:complete`, onComplete);
+                agentEmitter.removeListener(`ask-user:${envId}`, onAskUser);
+              }
+
+              orchEmitter.on(`orchestrator:${sessionId}:event`, onEvent);
+              orchEmitter.on(`orchestrator:${sessionId}:agent-spawn`, onAgentSpawn);
+              orchEmitter.on(`orchestrator:${sessionId}:agent-complete`, onAgentComplete);
+              orchEmitter.on(`orchestrator:${sessionId}:complete`, onComplete);
+              agentEmitter.on(`ask-user:${envId}`, onAskUser);
 
               ws.on('close', cleanup);
               ws.on('error', cleanup);

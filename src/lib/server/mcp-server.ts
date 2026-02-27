@@ -14,6 +14,11 @@ import {
   getTaskHistory,
   sendMessage,
   getUnreadMessages,
+  handleSpawnAgent,
+  handleSpawnAgents,
+  handleWaitForAgents,
+  handleGetAgentStatus,
+  handleAskUser,
 } from './mcp-tools';
 
 // =============================================================================
@@ -158,6 +163,117 @@ function getOrCreateMcpServer(): McpServer {
         targetAgentId: args.targetAgentId,
         message: args.message,
       });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // --- Tool: spyre_spawn_agent (orchestrator only) ---
+  _mcpServer.tool(
+    'spyre_spawn_agent',
+    'Spawn a lightweight agent for a specific task. Returns the agent ID immediately.',
+    {
+      name: z.string().describe('Agent name (e.g. "Backend Developer")'),
+      role: z.string().optional().describe('Agent role description'),
+      persona_id: z.string().optional().describe('Persona ID to use for this agent'),
+      task: z.string().describe('The task prompt for this agent'),
+      model: z.enum(['haiku', 'sonnet', 'opus']).optional().describe('Model tier (default: sonnet)'),
+      wait: z.boolean().optional().describe('If true, wait for agent completion before returning'),
+      context: z.string().optional().describe('JSON-encoded context forwarded from prior agents'),
+    },
+    async (args) => {
+      const auth = getAuthOrThrow();
+      if (auth.role !== 'orchestrator') {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Only orchestrator agents can spawn agents. Your role: ' + (auth.role ?? 'none') }) }] };
+      }
+      // Parse context from JSON string if provided
+      const parsedArgs = {
+        ...args,
+        context: args.context ? JSON.parse(args.context) as Record<string, unknown> : undefined,
+      };
+      const result = await handleSpawnAgent(auth, parsedArgs);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // --- Tool: spyre_spawn_agents (orchestrator only) ---
+  _mcpServer.tool(
+    'spyre_spawn_agents',
+    'Spawn a wave of parallel agents. All agents start immediately and run concurrently.',
+    {
+      wave_name: z.string().optional().describe('Optional wave label'),
+      agents: z.array(z.object({
+        name: z.string(),
+        role: z.string().optional(),
+        persona_id: z.string().optional(),
+        task: z.string(),
+        model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+        context: z.string().optional().describe('JSON-encoded context'),
+      })).describe('Array of agents to spawn in parallel'),
+    },
+    async (args) => {
+      const auth = getAuthOrThrow();
+      if (auth.role !== 'orchestrator') {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Only orchestrator agents can spawn agents. Your role: ' + (auth.role ?? 'none') }) }] };
+      }
+      // Parse context from JSON strings
+      const parsedArgs = {
+        ...args,
+        agents: args.agents.map(a => ({
+          ...a,
+          context: a.context ? JSON.parse(a.context) as Record<string, unknown> : undefined,
+        })),
+      };
+      const result = await handleSpawnAgents(auth, parsedArgs);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // --- Tool: spyre_wait_for_agents (orchestrator only) ---
+  _mcpServer.tool(
+    'spyre_wait_for_agents',
+    'Wait for one or more agents to complete. Returns their results when all finish.',
+    {
+      agent_ids: z.array(z.string()).describe('Agent IDs to wait for'),
+      timeout_seconds: z.number().optional().describe('Timeout in seconds (default: 600)'),
+    },
+    async (args) => {
+      const auth = getAuthOrThrow();
+      if (auth.role !== 'orchestrator') {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Only orchestrator agents can wait for agents. Your role: ' + (auth.role ?? 'none') }) }] };
+      }
+      const result = await handleWaitForAgents(auth, args);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // --- Tool: spyre_get_agent_status (orchestrator only) ---
+  _mcpServer.tool(
+    'spyre_get_agent_status',
+    'Check the current status and result of a spawned agent.',
+    {
+      agent_id: z.string().describe('The agent ID to check'),
+    },
+    async (args) => {
+      const auth = getAuthOrThrow();
+      if (auth.role !== 'orchestrator') {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Only orchestrator agents can check agent status. Your role: ' + (auth.role ?? 'none') }) }] };
+      }
+      const result = await handleGetAgentStatus(auth, args);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // --- Tool: spyre_ask_user (any role) ---
+  _mcpServer.tool(
+    'spyre_ask_user',
+    'Ask the human operator a question. Blocks until the user responds or times out (5 min).',
+    {
+      question: z.string().describe('The question to ask the user'),
+      options: z.array(z.string()).optional().describe('Optional list of choices'),
+    },
+    async (args) => {
+      const auth = getAuthOrThrow();
+      const result = await handleAskUser(auth, args);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
   );

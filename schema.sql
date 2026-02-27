@@ -531,6 +531,7 @@ CREATE TABLE IF NOT EXISTS personas (
     avatar      TEXT DEFAULT '🤖',                       -- Emoji for UI cards/badges
     description TEXT,                                    -- Short blurb shown on cards
     instructions TEXT NOT NULL DEFAULT '',                -- Free-form text injected into CLAUDE.md
+    default_model TEXT DEFAULT 'sonnet',                  -- Default model tier: haiku, sonnet, opus
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -595,7 +596,7 @@ CREATE TABLE IF NOT EXISTS pipeline_template_steps (
     id                TEXT PRIMARY KEY,
     template_id       TEXT NOT NULL REFERENCES pipeline_templates(id) ON DELETE CASCADE,
     position          INTEGER NOT NULL,
-    type              TEXT NOT NULL CHECK (type IN ('agent','gate')),
+    type              TEXT NOT NULL CHECK (type IN ('agent','gate','orchestrator')),
     label             TEXT NOT NULL,
     devcontainer_id   TEXT REFERENCES devcontainers(id) ON DELETE SET NULL,
     persona_id        TEXT REFERENCES personas(id) ON DELETE SET NULL,
@@ -637,7 +638,7 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
     id                TEXT PRIMARY KEY,
     pipeline_id       TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
     position          INTEGER NOT NULL,
-    type              TEXT NOT NULL CHECK (type IN ('agent','gate')),
+    type              TEXT NOT NULL CHECK (type IN ('agent','gate','orchestrator')),
     label             TEXT NOT NULL,
     devcontainer_id   TEXT REFERENCES devcontainers(id) ON DELETE SET NULL,
     persona_id        TEXT REFERENCES personas(id) ON DELETE SET NULL,
@@ -718,3 +719,80 @@ CREATE TABLE IF NOT EXISTS config_index (
     modified_at     TEXT,
     indexed_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- =============================================================================
+-- Orchestrator Sessions — Dynamic LLM-driven orchestration
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS orchestrator_sessions (
+    id              TEXT PRIMARY KEY,
+    env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+    pipeline_id     TEXT REFERENCES pipelines(id) ON DELETE SET NULL,
+    task_id         TEXT REFERENCES claude_tasks(id) ON DELETE SET NULL,
+    goal            TEXT NOT NULL,
+    system_prompt   TEXT,
+    model           TEXT DEFAULT 'sonnet',
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','paused','completed','error','cancelled')),
+    wave_count      INTEGER NOT NULL DEFAULT 0,
+    agent_count     INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd  REAL NOT NULL DEFAULT 0.0,
+    result_summary  TEXT,
+    error_message   TEXT,
+    started_at      TEXT,
+    completed_at    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_orch_env ON orchestrator_sessions(env_id);
+CREATE INDEX IF NOT EXISTS idx_orch_status ON orchestrator_sessions(status);
+
+-- =============================================================================
+-- Lightweight Agents — Dynamic agent processes spawned by orchestrator
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS lightweight_agents (
+    id              TEXT PRIMARY KEY,
+    env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+    orchestrator_id TEXT REFERENCES orchestrator_sessions(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    role            TEXT,
+    persona_id      TEXT REFERENCES personas(id) ON DELETE SET NULL,
+    task_prompt     TEXT NOT NULL,
+    task_id         TEXT REFERENCES claude_tasks(id) ON DELETE SET NULL,
+    model           TEXT DEFAULT 'sonnet',
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','spawning','running','completed','error','cancelled')),
+    result_summary  TEXT,
+    result_full     TEXT,
+    cost_usd        REAL,
+    wave_id         TEXT,
+    wave_position   INTEGER,
+    context         TEXT,
+    error_message   TEXT,
+    spawned_at      TEXT,
+    completed_at    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lagent_env ON lightweight_agents(env_id);
+CREATE INDEX IF NOT EXISTS idx_lagent_orch ON lightweight_agents(orchestrator_id);
+CREATE INDEX IF NOT EXISTS idx_lagent_status ON lightweight_agents(status);
+CREATE INDEX IF NOT EXISTS idx_lagent_wave ON lightweight_agents(orchestrator_id, wave_id);
+
+-- =============================================================================
+-- Ask-User Requests — Human-in-the-loop questions from agents/orchestrator
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS ask_user_requests (
+    id              TEXT PRIMARY KEY,
+    env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+    orchestrator_id TEXT REFERENCES orchestrator_sessions(id) ON DELETE CASCADE,
+    agent_id        TEXT,
+    question        TEXT NOT NULL,
+    options         TEXT,
+    response        TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','answered','cancelled','expired')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    answered_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_askuser_env ON ask_user_requests(env_id);
+CREATE INDEX IF NOT EXISTS idx_askuser_orch ON ask_user_requests(orchestrator_id);

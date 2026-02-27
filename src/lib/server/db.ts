@@ -511,6 +511,148 @@ function applyMigrations(db: Database.Database): void {
     `);
   }
 
+  // Orchestrator sessions table (dynamic agent orchestration)
+  const hasOrchSessions = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='orchestrator_sessions'"
+  ).get();
+  if (!hasOrchSessions) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS orchestrator_sessions (
+        id              TEXT PRIMARY KEY,
+        env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        pipeline_id     TEXT REFERENCES pipelines(id) ON DELETE SET NULL,
+        task_id         TEXT REFERENCES claude_tasks(id) ON DELETE SET NULL,
+        goal            TEXT NOT NULL,
+        system_prompt   TEXT,
+        model           TEXT DEFAULT 'sonnet',
+        status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','running','paused','completed','error','cancelled')),
+        wave_count      INTEGER NOT NULL DEFAULT 0,
+        agent_count     INTEGER NOT NULL DEFAULT 0,
+        total_cost_usd  REAL NOT NULL DEFAULT 0.0,
+        result_summary  TEXT,
+        error_message   TEXT,
+        started_at      TEXT,
+        completed_at    TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_orch_env ON orchestrator_sessions(env_id);
+      CREATE INDEX IF NOT EXISTS idx_orch_status ON orchestrator_sessions(status);
+    `);
+  }
+
+  // Lightweight agents table (dynamic agent processes)
+  const hasLightweightAgents = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='lightweight_agents'"
+  ).get();
+  if (!hasLightweightAgents) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS lightweight_agents (
+        id              TEXT PRIMARY KEY,
+        env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        orchestrator_id TEXT REFERENCES orchestrator_sessions(id) ON DELETE CASCADE,
+        name            TEXT NOT NULL,
+        role            TEXT,
+        persona_id      TEXT REFERENCES personas(id) ON DELETE SET NULL,
+        task_prompt     TEXT NOT NULL,
+        task_id         TEXT REFERENCES claude_tasks(id) ON DELETE SET NULL,
+        model           TEXT DEFAULT 'sonnet',
+        status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','spawning','running','completed','error','cancelled')),
+        result_summary  TEXT,
+        result_full     TEXT,
+        cost_usd        REAL,
+        wave_id         TEXT,
+        wave_position   INTEGER,
+        context         TEXT,
+        error_message   TEXT,
+        spawned_at      TEXT,
+        completed_at    TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_lagent_env ON lightweight_agents(env_id);
+      CREATE INDEX IF NOT EXISTS idx_lagent_orch ON lightweight_agents(orchestrator_id);
+      CREATE INDEX IF NOT EXISTS idx_lagent_status ON lightweight_agents(status);
+      CREATE INDEX IF NOT EXISTS idx_lagent_wave ON lightweight_agents(orchestrator_id, wave_id);
+    `);
+  }
+
+  // Ask-user requests table (human-in-the-loop)
+  const hasAskUser = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='ask_user_requests'"
+  ).get();
+  if (!hasAskUser) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ask_user_requests (
+        id              TEXT PRIMARY KEY,
+        env_id          TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+        orchestrator_id TEXT REFERENCES orchestrator_sessions(id) ON DELETE CASCADE,
+        agent_id        TEXT,
+        question        TEXT NOT NULL,
+        options         TEXT,
+        response        TEXT,
+        status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','answered','cancelled','expired')),
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        answered_at     TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_askuser_env ON ask_user_requests(env_id);
+      CREATE INDEX IF NOT EXISTS idx_askuser_orch ON ask_user_requests(orchestrator_id);
+    `);
+  }
+
+  // Add default_model column to personas table
+  const personaCols = db.pragma('table_info(personas)') as Array<{ name: string }>;
+  if (personaCols.length > 0 && !personaCols.some(c => c.name === 'default_model')) {
+    db.exec("ALTER TABLE personas ADD COLUMN default_model TEXT DEFAULT 'sonnet'");
+    // Set model defaults for existing personas
+    db.exec("UPDATE personas SET default_model = 'opus' WHERE name IN ('Architect', 'Reviewer')");
+    db.exec("UPDATE personas SET default_model = 'haiku' WHERE name IN ('Tester', 'DevOps')");
+  }
+
+  // Migrate pipeline_steps type CHECK to include 'orchestrator'
+  // SQLite doesn't allow ALTER CHECK, so we check if schema already includes it
+  const pstepSchema = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='pipeline_steps'"
+  ).get() as { sql: string } | undefined;
+  if (pstepSchema && !pstepSchema.sql.includes("'orchestrator'")) {
+    // Recreate table with updated CHECK constraint
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pipeline_steps_new (
+        id                TEXT PRIMARY KEY,
+        pipeline_id       TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+        position          INTEGER NOT NULL,
+        type              TEXT NOT NULL CHECK (type IN ('agent','gate','orchestrator')),
+        label             TEXT NOT NULL,
+        devcontainer_id   TEXT REFERENCES devcontainers(id) ON DELETE SET NULL,
+        persona_id        TEXT REFERENCES personas(id) ON DELETE SET NULL,
+        prompt_template   TEXT,
+        gate_instructions TEXT,
+        status            TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending','running','completed','skipped','error','waiting','cancelled')),
+        task_id           TEXT REFERENCES claude_tasks(id) ON DELETE SET NULL,
+        result_summary    TEXT,
+        gate_result       TEXT CHECK (gate_result IS NULL OR gate_result IN ('approved','rejected','revised')),
+        gate_feedback     TEXT,
+        gate_decided_at   TEXT,
+        iteration         INTEGER NOT NULL DEFAULT 0,
+        max_retries       INTEGER NOT NULL DEFAULT 0,
+        retry_count       INTEGER NOT NULL DEFAULT 0,
+        timeout_ms        INTEGER,
+        cost_usd          REAL,
+        started_at        TEXT,
+        completed_at      TEXT
+      );
+      INSERT INTO pipeline_steps_new SELECT * FROM pipeline_steps;
+      DROP TABLE pipeline_steps;
+      ALTER TABLE pipeline_steps_new RENAME TO pipeline_steps;
+      CREATE INDEX IF NOT EXISTS idx_psteps_pipeline ON pipeline_steps(pipeline_id, position);
+      CREATE INDEX IF NOT EXISTS idx_psteps_task ON pipeline_steps(task_id);
+    `);
+  }
+
   // Ensure categories are seeded (INSERT OR IGNORE is safe to re-run)
   const catCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number } | undefined;
   if (catCount && catCount.count === 0) {

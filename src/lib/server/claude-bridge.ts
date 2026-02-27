@@ -17,6 +17,26 @@ import type { Persona } from '$lib/types/persona';
 
 const MAX_CONCURRENT_TASKS = 5;
 
+/**
+ * Resolve a model tier name to a full Claude model ID.
+ * Reads overrides from environment.yaml if present.
+ */
+function resolveModelId(tier: 'haiku' | 'sonnet' | 'opus'): string {
+  const defaults: Record<string, string> = {
+    haiku: 'claude-haiku-4-5-20251001',
+    sonnet: 'claude-sonnet-4-6',
+    opus: 'claude-opus-4-6'
+  };
+  try {
+    const config = getEnvConfig();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const models = (config as any).models as Record<string, string> | undefined;
+    return models?.[tier] ?? defaults[tier];
+  } catch {
+    return defaults[tier];
+  }
+}
+
 // Use a global singleton so the emitter survives Vite SSR module reloads.
 // Without this, the WS handler (loaded via ssrLoadModule) gets a different
 // emitter than the one task execution emits on, so live events never arrive.
@@ -503,7 +523,7 @@ export async function dispatch(options: ClaudeDispatchOptions & { maxRetries?: n
   // Route to devcontainer or direct execution
   const execPromise = devcontainerId
     ? executeDevcontainerTask(taskId, envId, devcontainerId, prompt, workingDir)
-    : executeTask(taskId, envId, prompt, workingDir);
+    : executeTask(taskId, envId, prompt, workingDir, options.model);
 
   execPromise.catch((err) => {
     console.error(`[spyre] Task ${taskId} execution error:`, err);
@@ -588,7 +608,8 @@ async function executeTask(
   taskId: string,
   envId: string,
   prompt: string,
-  workingDir?: string
+  workingDir?: string,
+  model?: 'haiku' | 'sonnet' | 'opus'
 ): Promise<void> {
   const config = getEnvConfig();
   const taskTimeout = config.claude?.task_timeout ?? 600000;
@@ -637,7 +658,8 @@ async function executeTask(
     // - Run as non-root `spyre` user (--dangerously-skip-permissions requires non-root)
     const escapedPrompt = framedPrompt.replace(/'/g, "'\\''");
     const cdPart = workingDir ? `cd '${workingDir.replace(/'/g, "'\\''")}' && ` : '';
-    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --dangerously-skip-permissions`;
+    const modelFlag = model ? ` --model ${resolveModelId(model)}` : '';
+    const claudeInvocation = `${cdPart}claude -p '${escapedPrompt}' --output-format stream-json --verbose --dangerously-skip-permissions${modelFlag}`;
     // Wrap in `script -qc` to provide a PTY. Claude CLI stalls during startup
     // (Statsig feature-flag fetch) when stdout is not a TTY, which happens with
     // ssh2's exec() channel. `script -qc` creates a pseudo-terminal wrapper.

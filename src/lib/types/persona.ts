@@ -5,6 +5,7 @@ export interface Persona {
   avatar: string;
   description: string | null;
   instructions: string;
+  default_model: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -15,4 +16,5 @@ export interface PersonaInput {
   avatar?: string;
   description?: string | null;
   instructions?: string;
+  default_model?: string;
 }

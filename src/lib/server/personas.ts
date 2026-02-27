@@ -184,14 +184,24 @@ export function seedDefaultPersonas(): void {
     },
   ];
 
+  // Default model tiers per persona
+  const modelDefaults: Record<string, string> = {
+    'Architect': 'opus',
+    'Reviewer': 'opus',
+    'Backend': 'sonnet',
+    'Frontend': 'sonnet',
+    'Tester': 'haiku',
+    'DevOps': 'haiku',
+  };
+
   const insert = db.prepare(`
-    INSERT INTO personas (id, name, role, avatar, description, instructions)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO personas (id, name, role, avatar, description, instructions, default_model)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
   const tx = db.transaction(() => {
     for (const p of defaults) {
-      insert.run(uuid(), p.name, p.role, p.avatar, p.description, p.instructions);
+      insert.run(uuid(), p.name, p.role, p.avatar, p.description, p.instructions, modelDefaults[p.name] ?? 'sonnet');
     }
   });
   tx();

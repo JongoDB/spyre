@@ -6,7 +6,7 @@
 	interface StepDraft {
 		id: string;
 		position: number;
-		type: 'agent' | 'gate';
+		type: 'agent' | 'gate' | 'orchestrator';
 		label: string;
 		devcontainer_id: string;
 		persona_id: string;
@@ -41,7 +41,7 @@
 		name: string;
 		description: string;
 		icon: string;
-		steps: Array<{ type: 'agent' | 'gate'; label: string; pickAgent?: number; prompt?: string; gate_instructions?: string }>;
+		steps: Array<{ type: 'agent' | 'gate' | 'orchestrator'; label: string; pickAgent?: number; prompt?: string; gate_instructions?: string }>;
 	}
 
 	const presets: Preset[] = [
@@ -355,6 +355,7 @@
 								<select class="type-select" bind:value={step.type}>
 									<option value="agent">Agent</option>
 									<option value="gate">Gate</option>
+									<option value="orchestrator">Orchestrator</option>
 								</select>
 								<input class="label-input" bind:value={step.label} placeholder={step.type === 'gate' ? 'Review checkpoint' : 'Step label (auto-fills from agent)'} />
 								<button class="remove-btn" onclick={() => removeStep(step.id)} title="Remove step">
@@ -387,6 +388,13 @@
 										<input type="number" class="form-input retries-input" bind:value={step.timeout_min} placeholder="--" min="1" max="120" />
 									</div>
 								</div>
+								</div>
+							{:else if step.type === 'orchestrator'}
+								<div class="step-fields">
+									<div class="form-group">
+										<label>Orchestrator Goal</label>
+										<textarea class="form-input prompt-input" bind:value={step.prompt_template} placeholder="The goal for the dynamic orchestrator to accomplish..." rows="3"></textarea>
+									</div>
 								</div>
 							{:else}
 								<div class="step-fields">

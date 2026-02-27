@@ -28,7 +28,7 @@ export interface PipelineStep {
   id: string;
   pipeline_id: string;
   position: number;
-  type: 'agent' | 'gate';
+  type: 'agent' | 'gate' | 'orchestrator';
   label: string;
   devcontainer_id: string | null;
   persona_id: string | null;
@@ -74,7 +74,7 @@ export interface PipelineTemplateStep {
   id: string;
   template_id: string;
   position: number;
-  type: 'agent' | 'gate';
+  type: 'agent' | 'gate' | 'orchestrator';
   label: string;
   devcontainer_id: string | null;
   persona_id: string | null;
@@ -92,7 +92,7 @@ export interface CreatePipelineRequest {
   template_id?: string;
   steps: Array<{
     position: number;
-    type: 'agent' | 'gate';
+    type: 'agent' | 'gate' | 'orchestrator';
     label: string;
     devcontainer_id?: string;
     persona_id?: string;

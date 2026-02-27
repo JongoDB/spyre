@@ -385,6 +385,102 @@ function attachClaudeStream(ws, taskId) {
   });
 }
 
+// Orchestrator stream handler (production)
+async function getOrchestratorEmitter() {
+  try {
+    const chunkFiles = require('node:fs').readdirSync(resolve(__dirname, 'build/server/chunks'));
+    for (const file of chunkFiles) {
+      if (file.endsWith('.js')) {
+        try {
+          const mod = require(resolve(__dirname, 'build/server/chunks', file));
+          if (mod.getEmitter && mod.getSession) return mod;
+          // Check named exports from orchestrator
+          if (mod._getOrchestratorEmitter) return { getEmitter: mod._getOrchestratorEmitter, getSession: mod._getSession };
+        } catch { /* try next */ }
+      }
+    }
+  } catch { /* build dir may not exist */ }
+  return null;
+}
+
+async function getAgentManagerEmitter() {
+  try {
+    const chunkFiles = require('node:fs').readdirSync(resolve(__dirname, 'build/server/chunks'));
+    for (const file of chunkFiles) {
+      if (file.endsWith('.js')) {
+        try {
+          const mod = require(resolve(__dirname, 'build/server/chunks', file));
+          if (mod.listAgents && mod.getEmitter && !mod.getSession) return mod;
+        } catch { /* try next */ }
+      }
+    }
+  } catch { /* build dir may not exist */ }
+  return null;
+}
+
+function attachOrchestratorStream(ws, sessionId) {
+  const session = db.prepare('SELECT * FROM orchestrator_sessions WHERE id = ?').get(sessionId);
+  if (!session) {
+    sendJson(ws, { type: 'error', message: 'Orchestrator session not found' });
+    ws.close();
+    return;
+  }
+
+  const envId = session.env_id;
+
+  // Send snapshot of agents
+  const agents = db.prepare(
+    `SELECT la.*, p.name as persona_name, p.role as persona_role, p.avatar as persona_avatar
+     FROM lightweight_agents la LEFT JOIN personas p ON la.persona_id = p.id
+     WHERE la.orchestrator_id = ? ORDER BY la.created_at ASC`
+  ).all(sessionId);
+  sendJson(ws, { type: 'snapshot', session, agents });
+
+  if (session.status === 'completed' || session.status === 'error' || session.status === 'cancelled') {
+    sendJson(ws, { type: 'orchestrator-complete', sessionId, status: session.status });
+    ws.close();
+    return;
+  }
+
+  // Try to subscribe to live events via global emitters
+  // Orchestrator emitter: __spyre_orchestrator_emitter__
+  const orchEmitter = globalThis.__spyre_orchestrator_emitter__;
+  const agentEmitter = globalThis.__spyre_agent_emitter__;
+
+  if (!orchEmitter || !agentEmitter) {
+    sendJson(ws, { type: 'error', message: 'Event emitters not available' });
+    ws.close();
+    return;
+  }
+
+  const onEvent = (data) => sendJson(ws, { type: 'orchestrator-event', ...data });
+  const onAgentSpawn = (data) => sendJson(ws, { type: 'agent-spawn', ...data });
+  const onAgentComplete = (data) => sendJson(ws, { type: 'agent-complete', ...data });
+  const onComplete = (data) => {
+    sendJson(ws, { type: 'orchestrator-complete', ...data });
+    cleanup();
+    ws.close();
+  };
+  const onAskUser = (data) => sendJson(ws, { type: 'ask-user', ...data });
+
+  function cleanup() {
+    orchEmitter.removeListener(`orchestrator:${sessionId}:event`, onEvent);
+    orchEmitter.removeListener(`orchestrator:${sessionId}:agent-spawn`, onAgentSpawn);
+    orchEmitter.removeListener(`orchestrator:${sessionId}:agent-complete`, onAgentComplete);
+    orchEmitter.removeListener(`orchestrator:${sessionId}:complete`, onComplete);
+    agentEmitter.removeListener(`ask-user:${envId}`, onAskUser);
+  }
+
+  orchEmitter.on(`orchestrator:${sessionId}:event`, onEvent);
+  orchEmitter.on(`orchestrator:${sessionId}:agent-spawn`, onAgentSpawn);
+  orchEmitter.on(`orchestrator:${sessionId}:agent-complete`, onAgentComplete);
+  orchEmitter.on(`orchestrator:${sessionId}:complete`, onComplete);
+  agentEmitter.on(`ask-user:${envId}`, onAskUser);
+
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
+}
+
 server.on('upgrade', (req, socket, head) => {
   const url = req.url;
   if (!url) return;
@@ -412,6 +508,16 @@ server.on('upgrade', (req, socket, head) => {
     const taskId = claudeMatch[1];
     wss.handleUpgrade(req, socket, head, (ws) => {
       attachClaudeStream(ws, taskId);
+    });
+    return;
+  }
+
+  // Orchestrator stream WebSocket: /api/orchestrator/{sessionId}/ws
+  const orchMatch = url.match(/^\/api\/orchestrator\/([^/?]+)\/ws/);
+  if (orchMatch) {
+    const sessionId = orchMatch[1];
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      attachOrchestratorStream(ws, sessionId);
     });
     return;
   }
