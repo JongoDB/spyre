@@ -93,8 +93,8 @@
 	let claudeActiveTask = $state<ClaudeTask | null>(data.claude?.activeTask ?? null);
 	let claudeTaskHistory = $state<ClaudeTask[]>(data.claude?.taskHistory ?? []);
 	let claudeQueueItems = $state<ClaudeTaskQueueItem[]>((data.claude?.queueItems ?? []) as ClaudeTaskQueueItem[]);
-	let activeTab = $state<'terminal' | 'agents' | 'pipelines'>('terminal');
-	let agentMode = $state<'single' | 'orchestrator'>('orchestrator');
+	let activeTab = $state<'terminal' | 'agents'>('terminal');
+	let agentMode = $state<'single' | 'orchestrator' | 'pipelines'>('orchestrator');
 
 	// Devcontainer state (docker multi-agent mode)
 	let devcontainers = $state<DevcontainerWithPersona[]>(data.devcontainers ?? []);
@@ -672,9 +672,6 @@
 		<div class="tab-switcher">
 			<button class="tab-btn" class:active={activeTab === 'terminal'} onclick={() => activeTab = 'terminal'}>Terminal</button>
 			<button class="tab-btn" class:active={activeTab === 'agents'} onclick={() => activeTab = 'agents'}>Agents</button>
-			{#if env.docker_enabled}
-				<button class="tab-btn" class:active={activeTab === 'pipelines'} onclick={() => activeTab = 'pipelines'}>Pipelines</button>
-			{/if}
 		</div>
 	{/if}
 
@@ -684,16 +681,29 @@
 			<TerminalTabs envId={env.id} />
 		</div>
 	{:else if env.status === 'running' && env.ip_address && activeTab === 'agents'}
-		<div class="claude-section">
-			<!-- Agent mode switcher -->
+		<!-- Sticky mode switcher + description (does not scroll) -->
+		<div class="agent-mode-header">
 			<div class="agent-mode-switcher">
 				<button class="mode-pill" class:active={agentMode === 'single'} onclick={() => agentMode = 'single'}>Single Agent</button>
 				<button class="mode-pill" class:active={agentMode === 'orchestrator'} onclick={() => agentMode = 'orchestrator'}>Orchestrator</button>
+				{#if env.docker_enabled}
+					<button class="mode-pill" class:active={agentMode === 'pipelines'} onclick={() => agentMode = 'pipelines'}>Pipelines</button>
+				{/if}
 			</div>
+			<p class="mode-hint">
+				{#if agentMode === 'single'}
+					One Claude session with full streaming output and complete project context. Best for focused work: debugging, implementing a specific feature, code review, or asking questions. The agent sees everything in one conversation and can iterate.
+				{:else if agentMode === 'orchestrator'}
+					An AI coordinator that decomposes a high-level goal into parallel agents automatically. Best for broad tasks that benefit from divide-and-conquer: "implement this feature end-to-end," "refactor this module," or "audit and fix security issues across the codebase."
+				{:else}
+					Define explicit multi-step workflows with human approval gates between stages. Best when you need checkpoints, manual review, and repeatable processes: "design, review, implement, test" with sign-off at each stage.
+				{/if}
+			</p>
+		</div>
 
+		<!-- Scrollable content area -->
+		<div class="claude-section">
 			{#if agentMode === 'single'}
-				<p class="mode-hint">One Claude process for focused tasks — fix a bug, implement a feature, answer a question.</p>
-
 				{#if env.docker_enabled}
 					<!-- Docker Multi-Agent Mode -->
 					<div class="agent-header">
@@ -881,10 +891,7 @@
 						<ClaudeTaskHistory tasks={claudeTaskHistory} />
 					</div>
 				{/if}
-			{:else}
-				<!-- Orchestrator mode -->
-				<p class="mode-hint">AI coordinator that breaks down complex goals and spawns specialized agents in parallel waves.</p>
-
+			{:else if agentMode === 'orchestrator'}
 				{#if selectedOrchestratorSession}
 					<div class="claude-card card">
 						<OrchestratorRunner
@@ -922,39 +929,37 @@
 						</div>
 					{/if}
 				{/if}
-			{/if}
-		</div>
-	{:else if env.status === 'running' && env.ip_address && activeTab === 'pipelines'}
-		<div class="claude-section">
-			{#if pipelineView === 'list'}
-				<div class="claude-card card">
-					<PipelineList
-						envId={env.id}
-						{pipelines}
-						onSelect={(id) => { selectedPipelineId = id; pipelineView = 'runner'; }}
-						onCreateNew={() => { pipelineView = 'builder'; }}
-						onRefresh={refreshPipelines}
-					/>
-				</div>
-			{:else if pipelineView === 'builder'}
-				<div class="claude-card card">
-					<PipelineBuilder
-						envId={env.id}
-						{devcontainers}
-						personas={data.personas ?? []}
-						onCreated={(id) => { selectedPipelineId = id; pipelineView = 'runner'; refreshPipelines(); }}
-						onCancel={() => { pipelineView = 'list'; }}
-					/>
-				</div>
-			{:else if pipelineView === 'runner' && selectedPipelineId}
-				<div class="claude-card card">
-					<PipelineRunner
-						pipelineId={selectedPipelineId}
-						onBack={() => { pipelineView = 'list'; selectedPipelineId = null; refreshPipelines(); }}
-						onRefresh={refreshPipelines}
-						onClone={(id) => { selectedPipelineId = id; refreshPipelines(); }}
-					/>
-				</div>
+			{:else if agentMode === 'pipelines'}
+				{#if pipelineView === 'list'}
+					<div class="claude-card card">
+						<PipelineList
+							envId={env.id}
+							{pipelines}
+							onSelect={(id) => { selectedPipelineId = id; pipelineView = 'runner'; }}
+							onCreateNew={() => { pipelineView = 'builder'; }}
+							onRefresh={refreshPipelines}
+						/>
+					</div>
+				{:else if pipelineView === 'builder'}
+					<div class="claude-card card">
+						<PipelineBuilder
+							envId={env.id}
+							{devcontainers}
+							personas={data.personas ?? []}
+							onCreated={(id) => { selectedPipelineId = id; pipelineView = 'runner'; refreshPipelines(); }}
+							onCancel={() => { pipelineView = 'list'; }}
+						/>
+					</div>
+				{:else if pipelineView === 'runner' && selectedPipelineId}
+					<div class="claude-card card">
+						<PipelineRunner
+							pipelineId={selectedPipelineId}
+							onBack={() => { pipelineView = 'list'; selectedPipelineId = null; refreshPipelines(); }}
+							onRefresh={refreshPipelines}
+							onClone={(id) => { selectedPipelineId = id; refreshPipelines(); }}
+						/>
+					</div>
+				{/if}
 			{/if}
 		</div>
 	{:else if env.status === 'running' && !env.ip_address}
@@ -1322,12 +1327,19 @@
 		color: var(--text-primary);
 	}
 
-	/* ---- Agent mode switcher ---- */
+	/* ---- Agent mode header (sticky) ---- */
+
+	.agent-mode-header {
+		flex-shrink: 0;
+		padding-bottom: 12px;
+		border-bottom: 1px solid var(--border);
+		margin-bottom: 0;
+	}
 
 	.agent-mode-switcher {
 		display: flex;
 		gap: 0;
-		margin-bottom: 4px;
+		margin-bottom: 6px;
 	}
 
 	.mode-pill {
@@ -1347,6 +1359,9 @@
 
 	.mode-pill:last-child {
 		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+	}
+
+	.mode-pill:not(:first-child) {
 		border-left: none;
 	}
 
@@ -1364,7 +1379,7 @@
 	.mode-hint {
 		font-size: 0.75rem;
 		color: var(--text-secondary);
-		margin: 0 0 8px;
+		margin: 0;
 		line-height: 1.4;
 	}
 

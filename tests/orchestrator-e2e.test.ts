@@ -254,12 +254,16 @@ test.describe('Orchestrator Tab UI', () => {
 
 test.describe('Pipeline Builder Orchestrator Step', () => {
 	test('orchestrator option in step type dropdown', async ({ page }) => {
-		await goToOrchestratorTab(page); // ensures hydration
 		await page.goto(`${BASE}/environments/${ENV_ID}`);
+		await page.waitForSelector('button.tab-btn', { state: 'attached' });
+		await page.waitForTimeout(500);
 
-		const pipelinesTab = page.locator('button.tab-btn', { hasText: 'Pipelines' });
-		if (await pipelinesTab.isVisible()) {
-			await pipelinesTab.click();
+		// Click Agents tab, then switch to Pipelines mode
+		await page.locator('button.tab-btn', { hasText: 'Agents' }).click({ force: true });
+		await page.waitForTimeout(300);
+		const pipelinesPill = page.locator('button.mode-pill', { hasText: 'Pipelines' });
+		if (await pipelinesPill.isVisible()) {
+			await pipelinesPill.click({ force: true });
 			await page.waitForTimeout(500);
 
 			const newBtn = page.locator('button', { hasText: /New Pipeline|Create/ });
