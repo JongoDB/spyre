@@ -19,10 +19,11 @@
 		completed_at: string | null;
 	}
 
-	let { agents, selectedAgentId = null, onSelectAgent }: {
+	let { agents, selectedAgentId = null, onSelectAgent, onCancelAgent }: {
 		agents: AgentData[];
 		selectedAgentId?: string | null;
 		onSelectAgent?: (id: string) => void;
+		onCancelAgent?: (id: string) => void;
 	} = $props();
 
 	// Group agents by wave
@@ -98,6 +99,7 @@
 							{agent}
 							expanded={selectedAgentId === agent.id}
 							onSelect={onSelectAgent}
+							onCancel={onCancelAgent}
 						/>
 					{/each}
 				</div>

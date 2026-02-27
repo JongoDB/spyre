@@ -15,11 +15,31 @@
 		completed_at: string | null;
 	}
 
-	let { agent, expanded = false, onSelect }: {
+	let { agent, expanded = false, onSelect, onCancel }: {
 		agent: AgentData;
 		expanded?: boolean;
 		onSelect?: (id: string) => void;
+		onCancel?: (id: string) => void;
 	} = $props();
+
+	let cancelling = $state(false);
+
+	async function handleCancel(e: MouseEvent) {
+		e.stopPropagation();
+		if (cancelling) return;
+		cancelling = true;
+		try {
+			const res = await fetch(`/api/agents/${agent.id}`, { method: 'DELETE' });
+			if (res.ok) {
+				agent.status = 'cancelled';
+				onCancel?.(agent.id);
+			}
+		} finally {
+			cancelling = false;
+		}
+	}
+
+	const cancellable = $derived(agent.status === 'pending' || agent.status === 'spawning' || agent.status === 'running');
 
 	const statusColors: Record<string, string> = {
 		pending: '#6b7280',
@@ -54,6 +74,11 @@
 			<span class="status-dot" style="background: {statusColors[agent.status] ?? '#6b7280'}"
 				class:pulse={agent.status === 'running'}
 				title={agent.status}></span>
+			{#if cancellable}
+				<button class="cancel-btn" onclick={handleCancel} disabled={cancelling} title="Cancel agent">
+					{cancelling ? '...' : '\u00d7'}
+				</button>
+			{/if}
 		</div>
 	</div>
 
@@ -156,6 +181,32 @@
 
 	.status-dot.pulse {
 		animation: pulse-anim 1.5s ease-in-out infinite;
+	}
+
+	.cancel-btn {
+		all: unset;
+		cursor: pointer;
+		font-size: 0.85rem;
+		font-weight: 600;
+		width: 18px;
+		height: 18px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 4px;
+		color: var(--text-secondary, #a1a1aa);
+		background: transparent;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.cancel-btn:hover {
+		background: rgba(239, 68, 68, 0.2);
+		color: #f87171;
+	}
+
+	.cancel-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	@keyframes pulse-anim {
